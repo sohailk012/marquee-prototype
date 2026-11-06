@@ -34,6 +34,7 @@
     draft: null,
     setupStep: 0,
     campaign: null,
+    campView: 'map',
     memory: [{ text: 'Prefers calm, reassuring wording', when: 'From set-up' }, { text: 'Never compare our prices with other practices', when: '12 Oct' }],
   };
 
@@ -670,7 +671,7 @@
   function topicOf(text) {
     const t = text.toLowerCase();
     if (/whiten/.test(t)) return { k: 'whitening', one: 'whitening', many: 'whitening consultations', price: '£295', search: 'teeth whitening near me' };
-    if (/invisalign|aligner|braces|straight/.test(t)) return { k: 'invisalign', one: 'Invisalign', many: 'Invisalign consultations', price: '£2,950', search: 'Invisalign near me' };
+    if (/invisalign|aligner|braces|straight|new year|smile/.test(t)) return { k: 'invisalign', one: 'Invisalign', many: 'Invisalign consultations', price: '£2,950', search: 'Invisalign near me' };
     if (/veneer/.test(t)) return { k: 'veneers', one: 'veneer', many: 'veneer consultations', price: '£650 a tooth', search: 'veneers near me' };
     return { k: 'implants', one: 'implant', many: 'implant consultations', price: '£2,400', search: 'dental implants near me' };
   }
@@ -750,6 +751,36 @@
       assumptions: [`You can fit ${a.capacity} extra consultations a week`, `Your “from ${T.price}” price stays the same`, 'Jo’s consent form covers social media'],
     };
   }
+  /* ---------------- Live map of the team at work ---------------- */
+  const MAP_PLAN = { lead: [50, 50], research: [16, 18], numbers: [50, 9], playbook: [84, 18], trend: [91, 50], rules: [84, 82], social: [50, 91], ads: [16, 82], np: [9, 50], challenger: [70, 64] };
+  const MAP_MAKE = { lead: [8, 50], writer: [26, 30], designer: [44, 70], cd: [62, 30], checks: [80, 70], you: [94, 30] };
+  function campMap(c) {
+    const making = c.stage === 'production';
+    const pos = making ? MAP_MAKE : MAP_PLAN;
+    const last = c.feed[c.feed.length - 1];
+    let active = making ? null : (last && c.stage !== 'plan' && c.stage !== 'questions' ? last.who : null);
+    const said = {}; c.feed.forEach(f => { said[f.who] = f.text; });
+    if (making) {
+      const cur = c.assets.find(a => a.step < a.trail.length);
+      if (cur) { active = cur.trail[cur.step] ? cur.trail[cur.step][0] : null; c.assets.forEach(a => a.trail.slice(0, a.step).forEach(([w, n]) => { said[w] = `${a.title}: ${n}`; })); }
+      said.you = c.assets.filter(a => a.step >= a.trail.length).length + ' of ' + c.assets.length + ' ready for you';
+    }
+    const center = making ? null : 'lead';
+    const links = making ? [['lead', 'writer'], ['writer', 'designer'], ['designer', 'cd'], ['cd', 'checks'], ['checks', 'you'], ['cd', 'writer']]
+      : Object.keys(pos).filter(k => k !== 'lead').map(k => (k === 'challenger' ? ['challenger', 'lead'] : ['lead', k]));
+    const lines = links.map(([a, b]) => { const A = pos[a], B = pos[b]; const hot = active === a || active === b; return `<line x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" class="${hot ? 'hot' : said[a] || said[b] ? 'used' : ''}" ${a === 'cd' && b === 'writer' ? 'stroke-dasharray="1.2 1.2"' : ''}/>`; }).join('');
+    const nodes = Object.keys(pos).map(k => {
+      const info = k === 'you' ? ['You', '#30A46C'] : AG[k];
+      const state = k === active ? 'active' : said[k] ? 'done' : k === center ? 'busy' : 'idle';
+      const text = k === center ? (c.stage === 'plan' ? 'Plan ready for you' : c.stage === 'questions' ? 'Waiting for your answers' : 'Running the campaign: ' + c.brief) : (said[k] || (state === 'idle' ? 'Waiting' : ''));
+      return `<div class="mnode ${state} ${k === center ? 'center' : ''}" style="left:${pos[k][0]}%;top:${pos[k][1]}%">
+        <span class="mav" style="background:${info[1]}">${info[0].split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}</span>
+        <b>${esc(info[0])}</b><span class="mtext">${esc(text.length > 110 ? text.slice(0, 107) + '…' : text)}</span>${state === 'done' ? '<i class="mtick">✓</i>' : ''}</div>`;
+    }).join('');
+    return `<div class="mind ${making ? 'making' : ''}" role="img" aria-label="Live map of the team working on this campaign">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${lines}</svg>${nodes}</div>
+      <p class="tiny muted" style="margin-top:8px">${making ? 'The production line. A dashed line means the creative director sent work back to the writer.' : 'Lit lines show who is working right now. Ticks mean they’ve reported back.'} Tap Story to read every step in full.</p>`;
+  }
   function renderCampaign() { if (route() === 'campaign') render(); }
 
   function viewCampaign() {
@@ -761,6 +792,8 @@
     const working = st => c.stage === st ? `<div class="feed-line working"><span class="typing"><i></i><i></i><i></i></span><p class="muted">Working…</p></div>` : '';
     let html = `<div class="page-head"><span class="eyebrow">Campaign room · plan v${c.version}</span><h1>${esc(c.T.one.charAt(0).toUpperCase() + c.T.one.slice(1))} campaign</h1>
       <p class="lede">You asked: “${esc(c.brief)}”</p></div>${rail}
+      ${c.stage !== 'questions' ? `<div class="view-switch" role="group" aria-label="View" style="margin:0 0 12px"><button type="button" data-action="camp-view" data-v="map" aria-pressed="${S.campView === 'map'}">Live map</button><button type="button" data-action="camp-view" data-v="story" aria-pressed="${S.campView !== 'map'}">Story</button></div>` : ''}
+      ${c.stage !== 'questions' && S.campView === 'map' ? `<section class="room-card map-card">${campMap(c)}</section>` : ''}
       <p class="demo-note">Demo: this plays out in about a minute. The real team takes 5 to 15 minutes and uses your live data. We’ll notify you when it’s ready.</p>`;
     // questions
     const Q = QUESTIONS(c), answered = Q.every(q => c.answers[q[0]]);
@@ -1391,6 +1424,7 @@
       case 'chat-about': closeDrawer(); openChat(`About the ${el.dataset.name}: `); break;
       case 'go': if (!$('#drawer').hidden) closeDrawer(); location.hash = el.dataset.href; break;
       case 'teach': teachDrawer(id); break;
+      case 'camp-view': S.campView = el.dataset.v; render(); break;
       case 'camp-answer': if (S.campaign && S.campaign.stage === 'questions') { S.campaign.answers[el.dataset.k] = el.dataset.v; render(); } break;
       case 'camp-go': if (S.campaign) { S.campaign.stage = 'research'; render(); runCampaign(); } break;
       case 'camp-change': {
