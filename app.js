@@ -24,6 +24,8 @@
     history: [],
     usedIdeas: {},
     awaitPass: false,
+    notes: D.notifications.map(n => Object.assign({ read: false }, n)),
+    alertShown: {},
   };
 
   /* ---------------- Helpers ---------------- */
@@ -130,6 +132,10 @@
     message: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="3" width="13" height="10" rx="2"/><path d="m2 4 6 4.5L14 4"/></svg>',
     event: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/></svg>',
   };
+  ICON.heart = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 13.5S2 10 2 5.8A3 3 0 0 1 8 4.4a3 3 0 0 1 6 1.4C14 10 8 13.5 8 13.5z"/></svg>';
+  ICON.bubble = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.5 8a5.5 5.5 0 0 1-8.1 4.8L2.5 13.5l.8-2.8A5.5 5.5 0 1 1 13.5 8z"/></svg>';
+  ICON.send = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2 7 9M14 2l-4.5 12L7 9 2 6.5z"/></svg>';
+  ICON.spark = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5c.4 3.2 1.9 5 5 5.5-3.1.5-4.6 2.3-5 5.5-.4-3.2-1.9-5-5-5.5 3.1-.5 4.6-2.3 5-5.5z"/></svg>';
   const KIND_LABEL = { reel: 'Reel', carousel: 'Carousel', post: 'Post', ad: 'Ad', message: 'Email & text', event: 'Event' };
   function kindOf(e) {
     if (e.kind) return e.kind;
@@ -158,12 +164,17 @@
 
   /* ---------------- Home: switch between Today and Wall ---------------- */
   function viewHome() {
-    const top = `<div class="topline rise"><span class="eyebrow">${DAYS_LONG[TODAY.getDay()]} ${TODAY.getDate()} ${MONTHS[TODAY.getMonth()]} · ${esc(D.practice.name)}</span>
-      <div class="view-switch" role="group" aria-label="Home layout">
-        <button type="button" data-action="home-view" data-v="today" aria-pressed="${S.homeView === 'today'}">Today</button>
-        <button type="button" data-action="home-view" data-v="wall" aria-pressed="${S.homeView === 'wall'}">Creative wall</button>
-      </div></div>`;
-    return top + (S.homeView === 'wall' ? viewWall() : viewToday());
+    return `<div class="topline rise"><span class="eyebrow">${DAYS_LONG[TODAY.getDay()]} ${TODAY.getDate()} ${MONTHS[TODAY.getMonth()]} · ${esc(D.practice.name)}</span></div>` + viewToday();
+  }
+  function viewPlan() {
+    return `<div class="topline rise"><span class="eyebrow">Your marketing plan · ${esc(D.practice.name)}</span></div>` + viewWall();
+  }
+  const DESK_TABS = [['lead', 'Lead Gen'], ['social', 'Social'], ['ads', 'Paid Ads']];
+  function viewDesks() {
+    const sub = S.desk;
+    return `<div class="desk-switch-wrap rise"><div class="seg glass-seg" role="tablist" aria-label="Desks">${DESK_TABS.map(([k, l]) =>
+      `<a role="tab" href="#desks/${k}" aria-selected="${sub === k}" class="seg-item"><i class="sw sw-${k}"></i>${l}</a>`).join('')}</div></div>` +
+      ({ lead: viewLead, social: viewSocial, ads: viewAds })[sub]();
   }
 
   /* ---------------- Today feed ---------------- */
@@ -181,7 +192,7 @@
       return `<div class="phone"><div class="screen">
         <div class="ig-top"><i></i>oakmeredental</div>
         <div class="ig-media"><div class="ig-track">${c.slides.map((s, i) => `<div class="ig-slide"><small>${i + 1}/${c.slides.length}</small>${esc(s)}<small>Oakmere Dental</small></div>`).join('')}</div></div>
-        <div class="ig-actions">♡ <span>◌</span> <span>➢</span></div>
+        <div class="ig-actions">${ICON.heart}${ICON.bubble}${ICON.send}</div>
         <div class="ig-cap"><b>oakmeredental</b> ${esc(c.caption)}</div></div></div>`;
     }
     if (nd.id === 'n2') {
@@ -231,9 +242,9 @@
     return `
     <section class="hero2">
       <div class="rise" style="--i:1">
-        <h1>${greeting()}, ${esc(D.practice.owner)} <span class="wave" aria-hidden="true">✦</span></h1>
+        <h1>${greeting()}, ${esc(D.practice.owner)} <span class="wave" aria-hidden="true">${ICON.spark}</span></h1>
         <p class="sub">${needs.length ? `<b>${needs.length} thing${needs.length > 1 ? 's' : ''} need${needs.length > 1 ? '' : 's'} you.</b> About ${Math.max(1, needs.length - 1)} minute${needs.length > 2 ? 's' : ''}, then the team takes it from here.` : '<b>You’re all caught up.</b> The team is getting on with this week’s plan.'}</p>
-        <form class="askbar" data-form="ask"><span class="avatar">✦</span>
+        <form class="askbar" data-form="ask"><span class="avatar">${ICON.spark}</span>
           <label for="ask-input" style="position:absolute;left:-9999px">Ask your team</label>
           <input id="ask-input" name="q" type="text" autocomplete="off" placeholder="Tell the team what you want next…">
           <button class="btn btn-dark" type="submit">Ask</button></form>
@@ -325,7 +336,7 @@
           <div class="agenda" style="margin-top:8px">${agenda || '<p class="empty">Nothing planned yet. Ask the team for a plan.</p>'}</div>
         </div>
         <aside class="side-strip rise" style="--i:2">
-          <div class="s-tile"><span class="stat-label">Needs you</span><div class="stat-value">${S.needs.length}</div>${S.needs.length ? `<button class="link small" type="button" data-action="home-view" data-v="today">Go through them</button>` : '<span class="stat-foot">All clear</span>'}</div>
+          <div class="s-tile"><span class="stat-label">Needs you</span><div class="stat-value">${S.needs.length}</div>${S.needs.length ? `<button class="link small" type="button" data-action="go" data-href="#home">Go through them</button>` : '<span class="stat-foot">All clear</span>'}</div>
           <div class="s-tile"><span class="stat-label">Consultations booked</span><div class="stat-value">${D.goal.done}<span class="muted" style="font-size:16px"> / ${D.goal.target}</span></div><span class="stat-foot"><b>${D.goal.done - D.goal.expectedByToday} ahead</b> of pace</span></div>
           <div class="s-tile"><span class="stat-label">Treatment accepted</span><div class="stat-value">£48.6k</div><span class="stat-foot"><b>+23%</b> last 30 days</span></div>
         </aside>
@@ -447,7 +458,7 @@
       return `<div class="msg ${m.from === 'me' ? 'msg-me' : 'msg-them'}">${m.html}</div>`;
     }).join('');
     const mode = API.live ? `<span class="mode live"><i></i>Live AI${API.model ? ' · ' + esc(API.model) : ''}</span>` : `<span class="mode"><i></i>Demo mode: scripted replies. The live AI connects on the Cloudflare version.</span>`;
-    return `<div class="row"><span class="avatar avatar-lg" style="color:var(--gold)">✦</span><div><h2 id="drawer-title" style="font-size:20px">Head of Agents</h2>${mode}</div></div>
+    return `<div class="row"><span class="avatar avatar-lg" style="color:var(--gold)">${ICON.spark}</span><div><h2 id="drawer-title" style="font-size:20px">Head of Agents</h2>${mode}</div></div>
       <div class="chat" id="chat-log">${msgs || `<div class="msg msg-them">Hi ${esc(D.practice.owner)}. What would you like more of? Patients for a treatment, a campaign for a date, or a question about the numbers.</div>
         <div class="suggest"><button type="button" data-action="ask" data-q="Get more whitening patients before Christmas">More whitening before Christmas</button><button type="button" data-action="ask" data-q="What should we post next week?">What should we post next week?</button><button type="button" data-action="ask" data-q="How are we doing this month?">How are we doing?</button></div>`}</div>
       <form class="ask chat-input" data-form="chat"><label for="chat-input" style="position:absolute;left:-9999px">Message Head of Agents</label>
@@ -552,6 +563,74 @@
     renderChat();
   }
 
+
+  /* ================================================================
+     NOTIFICATIONS: a bell for everything, a pop-up only for urgent
+     ================================================================ */
+  const LEVEL = { urgent: ['Urgent', '#E5484D'], warn: ['Needs a reply', '#E8A21A'], money: ['Money in', '#30A46C'], info: ['Update', '#5560C9'] };
+  function updateBell() {
+    const n = S.notes.filter(x => !x.read && !x.handled).length, b = $('#bell-count');
+    if (!b) return; b.hidden = !n; b.textContent = n;
+  }
+  function noteRow(x) {
+    const [lbl, col] = LEVEL[x.level];
+    const acts = x.handled ? `<span class="status"><i class="dot dot-always"></i>${esc(x.handled)}</span>`
+      : (x.actions || []).map((a, i) => `<button class="btn ${i ? 'btn-line' : 'btn-dark'} btn-sm" type="button" data-action="note-act" data-id="${x.id}" data-a="${a[1]}">${esc(a[0])}</button>`).join('')
+        + (x.go ? `<button class="btn btn-line btn-sm" type="button" data-action="note-go" data-id="${x.id}">Open</button>` : '');
+    return `<div class="note ${x.level} ${x.read ? '' : 'unread'}"><span class="note-dot" style="background:${col}"></span>
+      <div class="note-body"><div class="row between"><span class="note-lbl" style="color:${col}">${lbl}</span><span class="tiny muted">${esc(x.time)}</span></div>
+      <b>${esc(x.title)}</b><p>${esc(x.body)}</p>${acts ? `<div class="need-actions">${acts}</div>` : ''}</div></div>`;
+  }
+  function notesDrawer() {
+    S.drawerKind = 'notes';
+    const urgent = S.notes.filter(x => x.level === 'urgent'), rest = S.notes.filter(x => x.level !== 'urgent');
+    const html = `<span class="eyebrow">Updates</span><h2 id="drawer-title" style="margin-top:6px">What you should know</h2>
+      <div class="drawer-section"><h4>Urgent</h4><div class="notes">${urgent.map(noteRow).join('')}</div></div>
+      <div class="drawer-section"><h4>Everything else</h4><div class="notes">${rest.map(noteRow).join('')}</div></div>
+      <div class="drawer-section card card-soft"><b>How we reach you</b>
+        <ul class="reach"><li><b>Urgent</b> (a hot enquiry waiting, spend spiking, a bad review): a pop-up here and a text to your phone.</li>
+        <li><b>Needs you</b> (approvals): the Today screen, plus a WhatsApp nudge if it waits a day.</li>
+        <li><b>Good news</b> (a patient says yes): here, and in an 8am summary email.</li>
+        <li><b>Results</b>: a Friday report, and a monthly call with Sam.</li></ul>
+        <p class="tiny muted" style="margin-top:8px">Quiet hours 8pm to 7am, except money emergencies. You choose all of this in settings.</p></div>
+      <div class="drawer-actions"><button class="btn btn-line btn-sm" type="button" data-action="demo-alert">Show me a demo alert</button></div>`;
+    if ($('#drawer').hidden) openDrawer(html); else $('#drawer-body').innerHTML = html;
+    S.notes.forEach(x => { if (x.level !== 'urgent') x.read = true; }); updateBell();
+  }
+  function showAlert(id) {
+    const x = S.notes.find(n => n.id === id); if (!x || x.handled) return;
+    S.alertShown[id] = true;
+    const box = $('#alert');
+    box.innerHTML = `<div class="alert-head"><span class="alert-pulse"></span><span class="note-lbl" style="color:#E5484D">Urgent · ${esc(x.time)}</span>
+      <button class="drawer-close" type="button" data-action="alert-close" aria-label="Dismiss">×</button></div>
+      <b id="alert-title">${esc(x.title)}</b><p>${esc(x.body)}</p>
+      <div class="need-actions">${(x.actions || []).map((a, i) => `<button class="btn ${i ? 'btn-line' : 'btn-dark'} btn-sm" type="button" data-action="note-act" data-id="${x.id}" data-a="${a[1]}">${esc(a[0])}</button>`).join('')}
+      <button class="btn btn-ghost btn-sm" type="button" data-action="alert-snooze" data-id="${x.id}">In 30 min</button></div>`;
+    box.hidden = false; box.classList.remove('out');
+  }
+  function hideAlert() { const b = $('#alert'); b.classList.add('out'); setTimeout(() => { b.hidden = true; }, 260); }
+  function noteAction(id, a) {
+    const x = S.notes.find(n => n.id === id); if (!x) return;
+    const done = {
+      called: ['Calling her now', 'Logged. Lead Gen will update HubSpot when you’re done.'],
+      leah: ['Sent to Leah', 'Leah has it on Slack with Aisha’s details and the call script.'],
+      keep: ['Kept paused', 'Staying paused. The Paid Ads Manager will suggest a fix tomorrow.'],
+      resume: ['Turned back on', 'Back on, with a £40 daily cap so it can’t run away again.'],
+      review: [null, null],
+    }[a];
+    if (a === 'review') { hideAlert(); reviewDrawer(x); return; }
+    x.handled = done[0]; x.read = true; toast(done[1]); hideAlert(); updateBell();
+    if (S.drawerKind === 'notes' && !$('#drawer').hidden) notesDrawer();
+  }
+  function reviewDrawer(x) {
+    S.drawerKind = 'review';
+    openDrawer(`<span class="eyebrow">Reviews</span><h2 id="drawer-title" style="margin-top:6px">Reply to the 2-star review</h2>
+      <div class="drawer-section card card-soft"><span class="small muted">★★☆☆☆ · Google · yesterday</span><p style="margin-top:6px">“Lovely staff but I waited 35 minutes past my appointment on Tuesday with no explanation.”</p></div>
+      <div class="drawer-section"><h4>Drafted reply (no patient details, as GDC guidance requires)</h4>
+        <textarea rows="6" style="width:100%;border:1px solid var(--line-3);border-radius:14px;padding:12px;font:inherit;background:rgba(255,255,255,.7)">${esc(D.reviewDraft)}</textarea></div>
+      <div class="drawer-actions"><button class="btn btn-dark" type="button" data-action="review-post" data-id="${x.id}">Approve and post</button></div>`);
+  }
+
   /* ================================================================
      TEAM
      ================================================================ */
@@ -576,7 +655,7 @@
       <div class="desk-row">
         ${T.desks.map(d => `
           <div class="desk-col ${d.id}">
-            <h3><span>${esc(d.name)}</span><a href="#${d.id}">Open desk</a></h3>
+            <h3><span>${esc(d.name)}</span><a href="#desks/${d.id}">Open desk</a></h3>
             <p class="owns">Owns: ${esc(d.owns)}</p>
             ${node(d.manager)}
             <div class="crew">${d.crew.map(c => node(c)).join('')}</div>
@@ -787,18 +866,34 @@
   /* ================================================================
      ROUTER
      ================================================================ */
-  const VIEWS = { home: viewHome, team: viewTeam, lead: viewLead, social: viewSocial, ads: viewAds };
-  function route() { const r = (location.hash || '#home').slice(1); return VIEWS[r] ? r : 'home'; }
+  const VIEWS = { home: viewHome, plan: viewPlan, desks: viewDesks, team: viewTeam };
+  function route() {
+    let [r, sub] = (location.hash || '#home').slice(1).split('/');
+    if (['lead', 'social', 'ads'].includes(r)) { sub = r; r = 'desks'; }
+    if (r === 'desks') S.desk = ['lead', 'social', 'ads'].includes(sub) ? sub : (S.desk || 'lead');
+    return VIEWS[r] ? r : 'home';
+  }
   function render() {
     const r = route();
-    const key = r + (r === 'home' ? S.homeView : '');
+    const key = r + (r === 'desks' ? S.desk : '');
     const fresh = key !== S.lastView; S.lastView = key;
     $('#view').classList.toggle('calm', !fresh);
+    document.body.dataset.route = r;
     $('#view').innerHTML = VIEWS[r]();
-    document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === r));
+    document.querySelectorAll('[data-nav]').forEach(a => { const on = a.dataset.nav === r; a.classList.toggle('on', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+    moveLens();
     if (S.drawerKind === 'chat') renderChat();
     afterRender(fresh);
   }
+
+  /* the glass lens that slides under the active dock item */
+  function moveLens() {
+    const lens = $('#dock-lens'), on = document.querySelector('.dock [data-nav].on');
+    if (!lens) return;
+    if (!on) { lens.style.opacity = 0; return; }
+    lens.style.opacity = 1; lens.style.width = on.offsetWidth + 'px'; lens.style.transform = `translateX(${on.offsetLeft}px)`;
+  }
+  window.addEventListener('resize', moveLens);
 
   /* ---------------- Motion after each render ---------------- */
   const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -863,6 +958,15 @@
       case 'add-on-day': openChat(`For ${fmtShort(el.dataset.date)}: `); break;
       case 'ask': sendChat(el.dataset.q); break;
       case 'chat-about': closeDrawer(); openChat(`About the ${el.dataset.name}: `); break;
+      case 'go': location.hash = el.dataset.href; break;
+      case 'open-notes': notesDrawer(); break;
+      case 'note-act': noteAction(id, el.dataset.a); break;
+      case 'note-go': { const x = S.notes.find(n => n.id === id); if (x) { x.read = true; closeDrawer(); location.hash = x.go; updateBell(); } break; }
+      case 'alert-close': hideAlert(); break;
+      case 'alert-snooze': hideAlert(); toast('We’ll remind you in 30 minutes.'); break;
+      case 'demo-alert': { closeDrawer(); const next = S.notes.find(n => n.level === 'urgent' && !n.handled); if (next) setTimeout(() => showAlert(next.id), 300); else toast('No urgent alerts left. Nice.'); break; }
+      case 'review-post': { const x = S.notes.find(n => n.id === id); if (x) { x.handled = 'Reply posted'; x.read = true; } closeDrawer(); updateBell(); toast('Reply posted to Google. Quality & Legal checked it first.'); break; }
+      case 'open-chat': openChat(); break;
       case 'home-view': S.homeView = el.dataset.v; try { localStorage.setItem('marquee_home', S.homeView); } catch (e) { /* ignore */ } render(); window.scrollTo({ top: 0, behavior: 'smooth' }); break;
       case 'deck-approve': {
         const card = $('#focus'); burst(ev.target.closest('button'));
@@ -923,7 +1027,7 @@
         m.plan.rows.forEach((r, i) => S.calendar.push({ id: `p${m.id}-${i}`, date: r.date, desk: r.desk, title: r.title, status: 'drafting', detail: `${r.what}. Why: ${r.why}`, isNew: true }));
         S.month = m.plan.rows[0].date.slice(0, 7);
         renderChat(); toast(`${m.plan.rows.length} items added to your calendar.`);
-        setTimeout(() => { closeDrawer(); S.homeView = 'wall'; if (route() !== 'home') location.hash = '#home'; else render(); setTimeout(() => { const c = $('#calendar'); c && c.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60); }, 900);
+        setTimeout(() => { closeDrawer(); if (route() !== 'plan') location.hash = '#plan'; else render(); setTimeout(() => { const c = $('#calendar'); c && c.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60); }, 900);
         break;
       }
       case 'plan-change': {
@@ -932,7 +1036,7 @@
       }
       case 'agent': agentDrawer(id); break;
       case 'lead-tab': S.leadTab = el.dataset.tab; render(); break;
-      case 'goto-attr': ev.preventDefault(); S.leadTab = 'attribution'; location.hash = '#lead'; break;
+      case 'goto-attr': ev.preventDefault(); S.leadTab = 'attribution'; location.hash = '#desks/lead'; break;
       case 'j-step': { const i = Number(el.dataset.i); if (i >= 0 && i < D.journey.steps.length) { S.journeyStep = i; render(); } break; }
       case 'attr': S.attrModel = el.dataset.m; render(); break;
       case 'rec-approve': {
@@ -1025,4 +1129,6 @@
 
   render();
   checkApi();
+  updateBell();
+  setTimeout(() => { if (!S.alertShown.u1) showAlert('u1'); }, 2500);
 })();

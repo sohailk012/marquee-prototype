@@ -287,4 +287,15 @@ window.DATA = {
     { h: 'Thinking About Invisalign? | Come to Our Open Evening', d: 'Meet Dr Patel, ask anything, get a free scan. No pressure. Book one of 12 spaces.' },
     { h: 'Straighter Teeth, Clear Prices | Invisalign Open Evening', d: 'Free 3D scan and a written plan with prices on the night. Thursday 19 November.' },
   ],
+
+  /* ---------- Notifications ---------- */
+  notifications: [
+    { id: 'u1', level: 'urgent', title: 'Hot implant enquiry waiting 47 minutes', body: 'Aisha R. scored 88: referred by a patient, wants to start this month. Called within the hour, people like her book twice as often.', time: '2 min ago', actions: [['I’ll call her now', 'called'], ['Send to Leah', 'leah']] },
+    { id: 'u2', level: 'urgent', title: 'Meta spend spiked, so we paused it', body: '£64 spent by 11am, three times normal. Budget Guard paused that campaign. Google Search is still running.', time: 'Today 11:04', actions: [['Keep it paused', 'keep'], ['Turn it back on', 'resume']] },
+    { id: 'm1', level: 'money', title: 'Leila N. accepted a £4,200 Invisalign plan', body: 'Found you on Instagram, booked through Google. Deposit paid.', time: 'Today 10:12' },
+    { id: 'w1', level: 'warn', title: 'New 2-star Google review', body: 'About waiting times on Tuesday. A calm reply is drafted for you to check. Replying within 24 hours matters.', time: 'Yesterday 18:40', actions: [['See the draft reply', 'review']] },
+    { id: 'i1', level: 'info', title: 'Your carousel is ready to approve', body: '5 slides on what happens at an implant consultation.', time: 'Today 9:30', go: '#home' },
+    { id: 'i2', level: 'info', title: 'Weekly report: your best week yet', body: '51 enquiries, 19 consultations booked, £38 per consultation.', time: 'Mon 9:00', go: '#desks/lead' },
+  ],
+  reviewDraft: 'Thank you for letting us know, and we’re sorry you waited longer than you should have on Tuesday. That’s not the experience we want for anyone. Our practice manager would like to hear more. Could you call us on the practice number, or reply here? — The Oakmere team',
 };
