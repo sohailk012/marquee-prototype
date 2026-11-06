@@ -1,4 +1,4 @@
-/* Backroom prototype: plain JavaScript, no build step.
+/* Marquee prototype: plain JavaScript, no build step.
    Views are functions that return HTML strings. Clicks are handled in one
    place through data-action attributes. All data is mock (see data.js). */
 (function () {
@@ -20,6 +20,10 @@
     adsPaused: false,
     called: {},
     lastFocus: null,
+    homeView: (() => { try { return localStorage.getItem('marquee_home') || 'today'; } catch (e) { return 'today'; } })(),
+    history: [],
+    usedIdeas: {},
+    awaitPass: false,
   };
 
   /* ---------------- Helpers ---------------- */
@@ -117,100 +121,215 @@
     return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
   }
 
+  /* ---------------- Creative tiles ---------------- */
+  const ICON = {
+    reel: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2" width="12" height="12" rx="3"/><path d="M6.5 5.5v5l4-2.5z" fill="currentColor" stroke="none"/></svg>',
+    carousel: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="3.5" width="9" height="9" rx="2"/><path d="M13 5v6.5a1.5 1.5 0 0 1-1.5 1.5"/><path d="M14.5 6.5v3"/></svg>',
+    post: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2" width="12" height="12" rx="3"/><circle cx="6" cy="6.5" r="1.3"/><path d="m3 12 3.5-3.5 2.5 2 2-1.5 2 2"/></svg>',
+    ad: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2.5 6.5v3h2l5 3v-9l-5 3z"/><path d="M12 6a3 3 0 0 1 0 4"/></svg>',
+    message: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="3" width="13" height="10" rx="2"/><path d="m2 4 6 4.5L14 4"/></svg>',
+    event: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/></svg>',
+  };
+  const KIND_LABEL = { reel: 'Reel', carousel: 'Carousel', post: 'Post', ad: 'Ad', message: 'Email & text', event: 'Event' };
+  function kindOf(e) {
+    if (e.kind) return e.kind;
+    const t = e.title;
+    if (/Reel/.test(t)) return 'reel';
+    if (/carousel|Stories/i.test(t)) return 'carousel';
+    if (e.desk === 'ads') return 'ad';
+    if (/evening|call|plan ready|review/i.test(t)) return 'event';
+    if (e.desk === 'lead') return 'message';
+    return 'post';
+  }
+  const cleanTitle = t => t.replace(/ \((Reel|carousel|Stories)\)/i, '');
+  function tile(e, opts) {
+    opts = opts || {};
+    const k = kindOf(e), needs = e.status === 'needs' || e.status === 'blocked';
+    const cls = ['tile', 'tile-' + k, e.status === 'done' ? 'is-done' : '', e.status === 'idea' ? 'is-idea' : '', needs ? 'needs-you' : '', e.isNew ? 'is-new' : ''].join(' ');
+    const drag = opts.drag && parse(e.date) >= TODAY && e.status !== 'done' ? 'draggable="true"' : '';
+    return `<button class="${cls}" type="button" data-action="open-event" data-id="${e.id}" ${drag} title="${esc(e.title)} · ${(STATUS[e.status] || STATUS.idea).label}">
+      <span class="t-kind">${ICON[k]}${KIND_LABEL[k]}</span>
+      ${k === 'reel' && !opts.mini ? '<span class="play"></span>' : ''}
+      ${k === 'message' && !opts.mini ? `<span class="bubble">${esc(e.detail.split('.')[0])}.</span>` : ''}
+      <span class="t-title">${esc(cleanTitle(e.title))}</span>
+      ${opts.mini ? '' : statusEl(e.status)}
+    </button>`;
+  }
+
+  /* ---------------- Home: switch between Today and Wall ---------------- */
   function viewHome() {
-    const g = D.goal;
-    const pct = Math.round((g.done / g.target) * 100);
-    const pacePct = (g.expectedByToday / g.target) * 100;
-    const ahead = g.done - g.expectedByToday;
-    const needCount = S.needs.length;
-    const upcoming = S.calendar.filter(e => parse(e.date) > TODAY && e.status !== 'done')
-      .sort((a, b) => a.date.localeCompare(b.date)).slice(0, 6);
+    const top = `<div class="topline rise"><span class="eyebrow">${DAYS_LONG[TODAY.getDay()]} ${TODAY.getDate()} ${MONTHS[TODAY.getMonth()]} · ${esc(D.practice.name)}</span>
+      <div class="view-switch" role="group" aria-label="Home layout">
+        <button type="button" data-action="home-view" data-v="today" aria-pressed="${S.homeView === 'today'}">Today</button>
+        <button type="button" data-action="home-view" data-v="wall" aria-pressed="${S.homeView === 'wall'}">Creative wall</button>
+      </div></div>`;
+    return top + (S.homeView === 'wall' ? viewWall() : viewToday());
+  }
 
-    const deskSummary = k => {
-      const needs = S.needs.filter(x => x.desk === k).length;
-      const working = S.calendar.filter(e => e.desk === k && e.status === 'drafting').length;
-      const txt = { lead: '12 consultations booked. 4 call-backs late.', social: 'Reach up 20% this week. Best: the myths Reel.', ads: '£472 of £2,400 spent. On pace.' }[k];
-      return `<a class="goal-desk" href="#${k}"><b><i class="sw sw-${k}"></i>${deskName(k)}</b><span>${txt}</span>
-        <span class="status">${needs ? `<i class="dot dot-needs"></i>${needs} need${needs > 1 ? '' : 's'} you` : `<i class="dot dot-working"></i>${working} in progress`}</span></a>`;
-    };
+  /* ---------------- Today feed ---------------- */
+  const NEED_META = {
+    n1: { faces: [['CP', 'social'], ['Cw', 'bench'], ['Ds', 'bench'], ['Pr', 'quality']], workers: 'Content Planner, Copywriter, Designer, Proofreader', checks: ['Proofread', 'Sounds like Oakmere', 'Ad rules', 'No patients shown'] },
+    n2: { faces: [['PM', 'ads'], ['GA', 'ads'], ['An', 'bench']], workers: 'Paid Ads Manager, Google Ads Buyer, Analyst', checks: ['Same total spend', 'Inside your caps'] },
+    n3: { faces: [['OC', 'lead'], ['SL', 'lead']], workers: 'Ops Coordinator, Speed-to-Lead', checks: ['All agreed to be contacted'] },
+    n4: { faces: [['SM', 'social'], ['Ds', 'bench']], workers: 'Social Manager, Designer', checks: ['Photo consent forms needed'] },
+  };
+  const FACE_BG = { lead: '#0E9184', social: '#C8622F', ads: '#5560C9', bench: '#B9831F', quality: '#7A5FA3' };
 
+  function needVisual(nd) {
+    if (nd.id === 'n1') {
+      const c = D.carousel;
+      return `<div class="phone"><div class="screen">
+        <div class="ig-top"><i></i>oakmeredental</div>
+        <div class="ig-media"><div class="ig-track">${c.slides.map((s, i) => `<div class="ig-slide"><small>${i + 1}/${c.slides.length}</small>${esc(s)}<small>Oakmere Dental</small></div>`).join('')}</div></div>
+        <div class="ig-actions">♡ <span>◌</span> <span>➢</span></div>
+        <div class="ig-cap"><b>oakmeredental</b> ${esc(c.caption)}</div></div></div>`;
+    }
+    if (nd.id === 'n2') {
+      return `<div class="vs">
+        <div class="vs-row"><div class="row"><span>Google Search</span><b>£29 per consultation</b></div><div class="vs-bar"><span style="width:36%"></span></div></div>
+        <div class="vs-row"><div class="row"><span>Meta lead ads</span><b>£52 per consultation</b></div><div class="vs-bar"><span style="width:65%;background:#9AA1E2"></span></div></div>
+        <div class="vs-move">£150 → Google</div>
+        <div class="small muted" style="text-align:center">About 3 extra consultations this month, same spend</div></div>`;
+    }
+    if (nd.id === 'n3') {
+      const ppl = [['Tom W.', '2h 40m'], ['Grace L.', '3h'], ['Ravi D.', '2h 15m'], ['Sophie B.', '2h 5m']];
+      return `<div class="people">${ppl.map((p, i) => `<div class="person" style="--i:${i}"><span class="avatar">${p[0][0]}</span><b>${p[0]}</b><small>Waiting ${p[1]}</small></div>`).join('')}</div>`;
+    }
+    return `<div class="drop"><div class="thumbs"><i></i><i></i><i></i></div>Drop Tuesday’s photos here<span class="small" style="font-weight:500">Raw is fine. The Designer does the rest.</span></div>`;
+  }
+  function focusCard(nd) {
+    const meta = NEED_META[nd.id] || { faces: [], workers: '', checks: [] };
+    const btns = {
+      approve: `<button class="btn btn-gold btn-big" type="button" data-action="deck-approve" data-id="${nd.id}">Approve</button>
+        <button class="btn btn-line btn-big" type="button" data-action="event-changes" data-id="${nd.calId}">Ask for changes</button>`,
+      task: `<button class="btn btn-gold btn-big" type="button" data-action="deck-approve" data-id="${nd.id}">Done, I’ve called them</button>
+        <button class="btn btn-line btn-big" type="button" data-action="need-calls" data-id="${nd.id}">Who are they?</button>`,
+      upload: `<button class="btn btn-gold btn-big" type="button" data-action="need-upload" data-id="${nd.id}">Upload photos</button>`,
+    }[nd.kind];
+    return `<article class="focus" id="focus" aria-live="polite">
+      <div class="focus-visual v-${nd.desk}">${needVisual(nd)}</div>
+      <div class="focus-body">
+        ${deskTag(nd.desk)}
+        <h3>${esc(nd.title)}</h3>
+        <p class="why">${esc(nd.why)}</p>
+        <div class="who-worked"><span class="faces">${meta.faces.map(f => `<span style="background:${FACE_BG[f[1]]}">${f[0]}</span>`).join('')}</span><span>Prepared by ${esc(meta.workers)}</span></div>
+        <div class="checks">${meta.checks.map(c => `<span>✓ ${esc(c)}</span>`).join('')}</div>
+        <div class="focus-actions">${btns}<button class="btn btn-ghost" type="button" data-action="deck-skip" data-id="${nd.id}">Later</button></div>
+      </div></article>`;
+  }
+  function sparkPath(vals, w, h) {
+    const max = Math.max(...vals), min = Math.min(...vals);
+    return vals.map((v, i) => `${i ? 'L' : 'M'}${(i / (vals.length - 1)) * w},${h - 3 - ((v - min) / ((max - min) || 1)) * (h - 6)}`).join(' ');
+  }
+  function viewToday() {
+    const g = D.goal, needs = S.needs, active = needs[0];
+    const C = 2 * Math.PI * 70, pct = g.done / g.target, pace = g.expectedByToday / g.target;
+    const soon = S.calendar.filter(e => { const d = parse(e.date); return d > TODAY && (d - TODAY) / 864e5 <= 10; }).sort((a, b) => a.date.localeCompare(b.date));
+    const byDay = {}; soon.forEach(e => (byDay[e.date] = byDay[e.date] || []).push(e));
+    const weekly = D.weeklyEnquiries.map(w => w.v), reach = D.socialWeekly.map(w => w.reach), cpc = [52, 49, 47, 45, 44, 41, 40, 38];
+    const spark = (vals, color) => `<svg class="spark" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true"><path d="${sparkPath(vals, 200, 40)}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     return `
-    <section class="hello">
-      <div>
-        <span class="eyebrow">${DAYS_LONG[TODAY.getDay()]} ${TODAY.getDate()} ${MONTHS[TODAY.getMonth()]}</span>
-        <h1>${greeting()}, ${esc(D.practice.owner)}.</h1>
-        <p class="brief">This week brought <b>51 new enquiries</b>, your best week since we started, and <b>12 consultations</b> are booked so far in November.
-        ${needCount ? `<b>${needCount} thing${needCount > 1 ? 's' : ''}</b> need${needCount > 1 ? '' : 's'} you before the weekend.` : 'Nothing needs you right now.'}</p>
-      </div>
-      <div class="ask-wrap">
-        <div class="ask-label"><span class="avatar">H</span><span class="who"><b>Head of Agents</b><span>Tell me what you need. I’ll brief the team.</span></span></div>
-        <form class="ask" data-form="ask">
-          <label for="ask-input" class="sr" style="position:absolute;left:-9999px">Ask your team</label>
-          <input id="ask-input" name="q" type="text" autocomplete="off" placeholder="e.g. Get more implant patients in December">
-          <button class="btn btn-dark" type="submit">Ask</button>
-        </form>
-        <div class="suggest">
+    <section class="hero2">
+      <div class="rise" style="--i:1">
+        <h1>${greeting()}, ${esc(D.practice.owner)} <span class="wave" aria-hidden="true">✦</span></h1>
+        <p class="sub">${needs.length ? `<b>${needs.length} thing${needs.length > 1 ? 's' : ''} need${needs.length > 1 ? '' : 's'} you.</b> About ${Math.max(1, needs.length - 1)} minute${needs.length > 2 ? 's' : ''}, then the team takes it from here.` : '<b>You’re all caught up.</b> The team is getting on with this week’s plan.'}</p>
+        <form class="askbar" data-form="ask"><span class="avatar">✦</span>
+          <label for="ask-input" style="position:absolute;left:-9999px">Ask your team</label>
+          <input id="ask-input" name="q" type="text" autocomplete="off" placeholder="Tell the team what you want next…">
+          <button class="btn btn-dark" type="submit">Ask</button></form>
+        <div class="suggest" style="margin-top:10px">
           <button type="button" data-action="ask" data-q="Plan a new year smile campaign">New year campaign</button>
           <button type="button" data-action="ask" data-q="We need more implant patients">More implant patients</button>
           <button type="button" data-action="ask" data-q="How is the ad budget doing?">How’s the budget?</button>
         </div>
       </div>
+      <div class="ring rise" style="--i:2" role="img" aria-label="${g.done} of ${g.target} consultations booked. ${g.done - g.expectedByToday} ahead of pace.">
+        <svg viewBox="0 0 168 168"><circle class="track" cx="84" cy="84" r="70" fill="none" stroke-width="14"/>
+          <circle class="fill" cx="84" cy="84" r="70" fill="none" stroke-width="14" stroke-dasharray="${C}" stroke-dashoffset="${C}" data-target="${C * (1 - pct)}"/>
+          <circle class="pace" cx="84" cy="84" r="70" fill="none" stroke-width="18" stroke-dasharray="3 ${C}" stroke-dashoffset="${-C * pace}"/></svg>
+        <div class="ring-label"><b data-count="${g.done}">${g.done}</b><span>of ${g.target} consultations in November</span></div>
+      </div>
     </section>
 
-    <section class="goal" aria-label="November goal">
+    <section class="deck-wrap">
       <div>
-        <div class="goal-top"><h2>${esc(g.title)}: ${esc(g.text)}</h2></div>
-        <div class="goal-bar" role="img" aria-label="${g.done} of ${g.target} booked; pace mark at ${g.expectedByToday}">
-          <span style="width:${pct}%"></span><i style="left:${pacePct}%"></i>
-        </div>
-        <div class="goal-legend"><span><b style="color:var(--ink)">${g.done} booked</b> of ${g.target}</span><span>${ahead > 0 ? `${ahead} ahead of pace` : 'On pace'} · line shows where we should be today</span></div>
+        <div class="deck-head"><h2>${needs.length ? 'Needs you' : 'All done'}</h2>${needs.length ? `<div class="deck-dots">${needs.map((_, i) => `<i class="${i === 0 ? 'on' : ''}"></i>`).join('')}</div><span class="small muted">One at a time</span>` : ''}</div>
+        ${active ? focusCard(active) : `<div class="done-card"><h3>That’s everything.</h3><p>Nothing else needs you today. The team will text you if anything comes up. Go and see some patients.</p><span class="bulbs" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div>`}
       </div>
-      <div class="goal-desks">${['lead', 'social', 'ads'].map(deskSummary).join('')}</div>
+      <div class="queue">${needs.length > 1 ? `<h4>Up next</h4>${needs.slice(1).map(nd => `<button class="q-card" type="button" data-action="deck-pick" data-id="${nd.id}">${deskTag(nd.desk)}<b>${esc(nd.title)}</b></button>`).join('')}` : ''}</div>
     </section>
 
-    <section class="section" aria-label="Last 30 days">
-      <div class="section-head"><h2>How it’s going</h2><p>Last 30 days, in money and patients, not likes.</p></div>
-      <div class="stats">${D.stats.map(s => `
-        <div class="stat"><span class="stat-label">${esc(s.label)}</span><span class="stat-value">${esc(s.value)}</span>
-        <span class="stat-foot"><b>${esc(s.delta)}</b> ${esc(s.note)}</span></div>`).join('')}
-      </div>
+    <section class="section">
+      <div class="section-head"><h2>Coming up</h2><p>The next 10 days. Tap anything to see it or change it.</p></div>
+      <div class="strip">${Object.keys(byDay).map((k, i) => { const d = parse(k); return `<div class="strip-day rise" style="--i:${i}"><span><b>${d.getDate()}</b>${DAYS[d.getDay()]}</span>${byDay[k].map(e => tile(e)).join('')}</div>`; }).join('')}</div>
     </section>
 
-    <section class="section home-main">
-      <div>${calendarBlock()}</div>
-      <aside class="rail">
-        <div>
-          <h3>Needs you <span class="count">${needCount}</span></h3>
-          <div class="needs">${needCount ? S.needs.map(needItem).join('') : '<p class="empty">All clear. The team will shout when something needs you.</p>'}</div>
-        </div>
-        <div>
-          <h3>Happening now</h3>
-          <div class="now">${D.happeningNow.map(h => `<div class="now-item"><i class="pulse"></i><div>${esc(h.what)}<small>${esc(h.who)} desk</small></div></div>`).join('')}</div>
-        </div>
-        <div>
-          <h3>Coming up</h3>
-          <div class="next">${upcoming.map(e => {
-            const d = parse(e.date);
-            return `<button class="next-item" type="button" data-action="open-event" data-id="${e.id}"><span class="next-date"><b>${d.getDate()}</b>${DAYS[d.getDay()]}</span>
-              <span><span class="next-title">${esc(e.title)}</span><br>${deskTag(e.desk)}</span></button>`;
-          }).join('')}</div>
-        </div>
-      </aside>
+    <section class="section">
+      <p class="story">This month, <span class="num" data-count="186">186</span> people asked about treatment, <span class="num" data-count="61">61</span> booked a consultation, and <span class="num" data-count="48600" data-prefix="£">£48,600</span> of treatment was accepted.</p>
+      <div class="story-tiles">
+        <div class="s-tile rise" style="--i:1"><span class="stat-label">Enquiries this week</span><div class="stat-value" data-count="51">51</div><span class="stat-foot"><b>Best week yet</b> · up from 31</span>${spark(weekly, '#17150F')}</div>
+        <div class="s-tile rise" style="--i:2"><span class="stat-label">Cost per consultation</span><div class="stat-value" data-count="38" data-prefix="£">£38</div><span class="stat-foot"><b>Down £14</b> since September</span>${spark(cpc, '#5560C9')}</div>
+        <div class="s-tile rise" style="--i:3"><span class="stat-label">People reached on social</span><div class="stat-value">14.9k</div><span class="stat-foot"><b>+20%</b> this week</span>${spark(reach, '#C8622F')}</div>
+      </div>
+      <details class="more" style="margin-top:22px"><summary class="link">See where enquiries came from</summary>
+        <div class="charts" style="margin-top:12px">
+          <div><div class="chart-title">New enquiries each week</div>${barChart({ data: D.weeklyEnquiries.map(w => ({ label: w.wk, v: w.v })), color: '#17150F', unit: 'enquiries', tipPrefix: 'week of ', aria: 'Weekly enquiries rising from 31 to 51', valueHead: 'Enquiries' })}</div>
+          <div><div class="chart-title">Where they came from</div>${hbars(D.sources.map(s => ({ name: s.name, v: s.v })))}</div>
+        </div></details>
     </section>
 
-    <section class="section charts">
-      <div>
-        <div class="chart-title">New enquiries each week</div>
-        <div class="chart-sub">Up from about 30 a week in September. Every channel together.</div>
-        ${barChart({ data: D.weeklyEnquiries.map(w => ({ label: w.wk, v: w.v })), color: '#1B1B1A', unit: 'enquiries', tipPrefix: 'week of ', aria: 'Bar chart of weekly enquiries, rising from 31 to 51 over 8 weeks', valueHead: 'Enquiries' })}
-      </div>
-      <div>
-        <div class="chart-title">Where they came from</div>
-        <div class="chart-sub">186 enquiries in the last 30 days.</div>
-        ${hbars(D.sources.map(s => ({ name: s.name, v: s.v })))}
-        <p class="small muted" style="margin-top:14px">Social rarely gets the last click but often starts the journey. <a href="#lead" data-action="goto-attr" class="link">See how we credit it</a></p>
-      </div>
+    <section class="section">
+      <div class="live"><span class="lbl"><i></i>Your team right now</span><div class="live-msg" id="live-msg">${esc(TICKER[0][1])}<small>${esc(TICKER[0][0])}</small></div></div>
     </section>`;
+  }
+  const TICKER = [
+    ['Google Ads Buyer', 'Writing 6 headline options for the Open Evening'],
+    ['Scoring & Routing', 'Re-scoring 38 October enquiries that went quiet'],
+    ['Video Editor', 'Cutting a 20-second Reel from the hygienist interview'],
+    ['Speed-to-Lead', 'Texted a new Invisalign enquiry 1 minute after she asked'],
+    ['Ideas Lab', 'Spotted comparison videos getting 2× the saves this week'],
+    ['Budget Guard', 'Checked spend: £18 today, under the £80 cap'],
+    ['Proofreader', 'Fixed 2 typos in the nurture email before it reached you'],
+  ];
+
+  /* ---------------- Creative wall ---------------- */
+  function viewWall() {
+    const [y, m] = S.month.split('-').map(Number);
+    const first = new Date(y, m - 1, 1);
+    const start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7));
+    const last = new Date(y, m, 0);
+    const end = new Date(last); end.setDate(last.getDate() + (7 - ((last.getDay() + 6) % 7) - 1));
+    let cells = '', agenda = '';
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const key = iso(d), out = d.getMonth() !== m - 1, past = d < TODAY;
+      const evs = S.calendar.filter(e => e.date === key && S.filters[e.desk]);
+      cells += `<div class="wall-day ${out ? 'out' : ''} ${past ? 'past' : ''} ${key === D.today ? 'today' : ''}" data-day="${key}" ${!out && !past ? 'data-drop="1"' : ''}>
+        <div class="wall-num"><span>${d.getDate()}</span>${!out && !past ? `<button class="cal-add" type="button" data-action="add-on-day" data-date="${key}" aria-label="Ask the team for something on ${fmtShort(key)}">+</button>` : ''}</div>
+        ${evs.map(e => tile(e, { mini: true, drag: true })).join('')}</div>`;
+      if (!out && evs.length) agenda += `<div class="strip-day" style="margin-bottom:14px"><span><b>${d.getDate()}</b>${DAYS[d.getDay()]}</span>${evs.map(e => tile(e)).join('')}</div>`;
+    }
+    const canPrev = S.month > '2026-11', canNext = S.month < '2026-12';
+    return `
+      <div class="wall-top rise">
+        <div><h2>${MONTHS[m - 1]}</h2><p class="small muted" style="margin-top:8px">Your month on one wall. Drag a tile to move it, tap to open it, press + to ask for something new.</p></div>
+        <div class="row wrap">
+          <div class="filters" role="group" aria-label="Show desks">${['lead', 'social', 'ads'].map(k => `<button class="filter" type="button" data-action="filter" data-desk="${k}" aria-pressed="${S.filters[k]}"><i class="sw sw-${k}"></i>${deskName(k)}</button>`).join('')}</div>
+          <button class="btn btn-ghost btn-sm" type="button" data-action="month" data-dir="-1" ${canPrev ? '' : 'disabled style="opacity:.3"'} aria-label="Previous month">‹</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-action="month" data-dir="1" ${canNext ? '' : 'disabled style="opacity:.3"'} aria-label="Next month">›</button>
+        </div>
+      </div>
+      <div class="wall-layout">
+        <div>
+          <div class="wall" style="margin-bottom:6px">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(x => `<span class="wall-dow">${x}</span>`).join('')}</div>
+          <div class="wall rise" style="--i:1" id="calendar">${cells}</div>
+          <div class="agenda" style="margin-top:8px">${agenda || '<p class="empty">Nothing planned yet. Ask the team for a plan.</p>'}</div>
+        </div>
+        <aside class="side-strip rise" style="--i:2">
+          <div class="s-tile"><span class="stat-label">Needs you</span><div class="stat-value">${S.needs.length}</div>${S.needs.length ? `<button class="link small" type="button" data-action="home-view" data-v="today">Go through them</button>` : '<span class="stat-foot">All clear</span>'}</div>
+          <div class="s-tile"><span class="stat-label">Consultations booked</span><div class="stat-value">${D.goal.done}<span class="muted" style="font-size:16px"> / ${D.goal.target}</span></div><span class="stat-foot"><b>${D.goal.done - D.goal.expectedByToday} ahead</b> of pace</span></div>
+          <div class="s-tile"><span class="stat-label">Treatment accepted</span><div class="stat-value">£48.6k</div><span class="stat-foot"><b>+23%</b> last 30 days</span></div>
+        </aside>
+      </div>`;
   }
 
   function needItem(nd) {
@@ -222,44 +341,6 @@
     }[nd.kind];
     return `<div class="need" data-need="${nd.id}">${deskTag(nd.desk)}<span class="need-title">${esc(nd.title)}</span>
       <span class="need-why">${esc(nd.why)}</span><div class="need-actions">${btns}</div></div>`;
-  }
-
-  /* ---------------- Calendar ---------------- */
-  function calendarBlock() {
-    const [y, m] = S.month.split('-').map(Number);
-    const first = new Date(y, m - 1, 1);
-    const start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7)); // Monday start
-    const last = new Date(y, m, 0);
-    const end = new Date(last); end.setDate(last.getDate() + (7 - ((last.getDay() + 6) % 7) - 1));
-    const visible = e => S.filters[e.desk];
-    let cells = '', agenda = '';
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const key = iso(d), out = d.getMonth() !== m - 1;
-      const evs = S.calendar.filter(e => e.date === key && visible(e));
-      const cls = ['cal-day', out ? 'out' : '', key === D.today ? 'today' : '', d < TODAY ? 'past' : ''].join(' ');
-      cells += `<div class="${cls}"><div class="cal-num"><span>${d.getDate()}</span>${!out && d >= TODAY ? `<button class="cal-add" type="button" data-action="add-on-day" data-date="${key}" aria-label="Ask the team for something on ${fmtShort(key)}">+</button>` : ''}</div>
-        ${evs.map(evChip).join('')}</div>`;
-      if (!out && evs.length) agenda += `<div class="agenda-day"><span class="next-date"><b>${d.getDate()}</b>${DAYS[d.getDay()]}</span><div class="evs">${evs.map(evChip).join('')}</div></div>`;
-    }
-    const canPrev = S.month > '2026-11', canNext = S.month < '2026-12';
-    return `
-      <div class="cal-head">
-        <div class="row"><h2>${MONTHS[m - 1]} ${y}</h2>
-          <button class="btn btn-ghost btn-sm" type="button" data-action="month" data-dir="-1" ${canPrev ? '' : 'disabled style="opacity:.3"'} aria-label="Previous month">‹</button>
-          <button class="btn btn-ghost btn-sm" type="button" data-action="month" data-dir="1" ${canNext ? '' : 'disabled style="opacity:.3"'} aria-label="Next month">›</button>
-        </div>
-        <div class="filters" role="group" aria-label="Show desks">${['lead', 'social', 'ads'].map(k =>
-          `<button class="filter" type="button" data-action="filter" data-desk="${k}" aria-pressed="${S.filters[k]}"><i class="sw sw-${k}"></i>${deskName(k)}</button>`).join('')}</div>
-      </div>
-      <div class="cal" id="calendar"><div class="cal-dow">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(x => `<span>${x}</span>`).join('')}</div>
-        <div class="cal-grid">${cells}</div></div>
-      <div class="agenda">${agenda || '<p class="empty">Nothing planned yet. Ask the Head of Agents for a plan.</p>'}</div>
-      <div class="cal-key"><span><i class="dot dot-needs"></i>Needs you</span><span><i class="dot dot-working"></i>Team working on it</span><span><i class="dot dot-always"></i>Scheduled or live</span><span><i class="dot dot-idle"></i>Done or idea</span><span>Hover a day and press + to ask for something</span></div>`;
-  }
-  function evChip(e) {
-    const st = STATUS[e.status] || STATUS.idea;
-    const cls = ['ev', 'ev-' + e.desk, e.status === 'done' ? 'is-done' : '', e.status === 'idea' ? 'is-idea' : '', e.isNew ? 'is-new' : ''].join(' ');
-    return `<button class="${cls}" type="button" data-action="open-event" data-id="${e.id}" title="${esc(e.title)} · ${st.label}"><i class="dot dot-${st.dot}"></i><span class="ev-text">${esc(e.title)}</span></button>`;
   }
 
   function eventDrawer(id) {
@@ -326,44 +407,67 @@
     };
   }
 
+  /* Scripted fallback, used when the live AI isn't connected (e.g. on GitHub Pages). */
   function replyFor(q) {
     const t = q.toLowerCase();
-    if (/implant/.test(t)) return { plan: 'implants' };
-    if (/new year|january|christmas|december|festive/.test(t)) return { plan: 'newyear' };
-    if (/budget|spend|spent|ads?\b|cost per/.test(t)) return { text: `This month we’ve spent <b>£472 of £2,400</b>, right on pace. Google Search is doing best at <b>£29 per consultation</b>. Meta is at £52, so I’ve suggested moving £150 across. It’s waiting for you under Needs you.` };
-    if (/how.*(going|doing)|result|report|numbers/.test(t)) return { text: `In the last 30 days: <b>186 enquiries</b>, <b>61 consultations</b> and <b>£48,600</b> of treatment accepted. That’s up 23% on the month before. The biggest leak is call-backs: enquiries called within an hour book at 52%, but after a day it’s 19%.` };
-    if (/whiten|veneer|invisalign|aligner|bond|hygien|check.?up|emergenc/.test(t)) {
-      const topic = (t.match(/whitening|veneers?|invisalign|aligners?|bonding|hygiene|check.?ups?|emergenc\w*/) || ['this'])[0];
-      return { generic: topic };
-    }
+    const treat = (t.match(/implants?|whitening|veneers?|invisalign|aligners?|braces|bonding|hygiene|check.?ups?|emergenc\w*|crowns?|dentures?|nervous patients/) || [])[0];
+    const season = /new year|january|christmas|december|festive/.test(t);
+    if (treat && /implant/.test(treat)) return { plan: 'implants' };
+    if (season && (!treat || /invisalign|aligner|braces/.test(treat))) return { plan: 'newyear' };
+    if (treat) return { generic: treat };
+    if (/budget|spend|spent|\bads?\b|cost per|google|meta|facebook ads/.test(t)) return { text: `This month we’ve spent <b>£472 of £2,400</b>, right on pace. Google Search is doing best at <b>£29 per consultation</b>. Meta is at £52, so I’ve suggested moving £150 across. It’s waiting for you under Needs you.` };
+    if (/how.*(going|doing)|result|report|numbers|enquir|patients? (this|last)/.test(t)) return { text: `In the last 30 days: <b>186 enquiries</b>, <b>61 consultations</b> and <b>£48,600</b> of treatment accepted. That’s up 23% on the month before. The biggest leak is call-backs: enquiries called within an hour book at 52%, but after a day it’s 19%.` };
+    if (/post|instagram|social|reel|tiktok|content/.test(t)) return { generic: 'social content' };
+    if (/review|google profile|rating/.test(t)) return { text: `Reviews will be its own desk soon. For now, Lead Gen can send a review request to patients who finished treatment this month. Say <b>“ask October patients for reviews”</b> and I’ll plan it.` };
+    if (/^(hi|hello|hey|yo)\b/.test(t)) return { text: `Hi ${esc(D.practice.owner)}! Tell me what you want more of, like a treatment, a date, or a question about the numbers, and I’ll brief the desks.` };
     return { ask: true };
   }
 
+  /* Live AI connection (Cloudflare Pages Function, see BACKEND.md). Falls back to scripted. */
+  const API = { base: '', live: false, checked: false, model: null };
+  try {
+    const qp = new URLSearchParams(location.search).get('api');
+    if (qp) localStorage.setItem('marquee_api', qp.replace(/\/$/, ''));
+    API.base = localStorage.getItem('marquee_api') || '';
+  } catch (e) { /* storage blocked: same-origin only */ }
+  function checkApi() {
+    fetch(API.base + '/api/health', { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => { API.checked = true; API.live = !!(j && j.configured); API.model = j && j.model; renderChat(); })
+      .catch(() => { API.checked = true; API.live = false; renderChat(); });
+  }
+  const getPass = () => { try { return sessionStorage.getItem('marquee_pass') || ''; } catch (e) { return ''; } };
+  const setPass = v => { try { sessionStorage.setItem('marquee_pass', v); } catch (e) { /* ignore */ } };
+  const mdLite = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+
   function chatHtml() {
     const msgs = S.chat.map(m => {
-      if (m.kind === 'typing') return `<div class="msg msg-them"><span class="typing" aria-label="Typing"><i></i><i></i><i></i></span></div>`;
+      if (m.kind === 'typing') return `<div class="msg msg-them"><span class="typing" aria-label="Typing"><i></i><i></i><i></i></span>${m.note ? `<div class="tiny muted" style="margin-top:6px">${esc(m.note)}</div>` : ''}</div>`;
       if (m.kind === 'plan') return planCard(m);
       return `<div class="msg ${m.from === 'me' ? 'msg-me' : 'msg-them'}">${m.html}</div>`;
     }).join('');
-    return `<div class="row"><span class="avatar avatar-lg">H</span><div><h2 id="drawer-title" style="font-size:20px">Head of Agents</h2><span class="small muted">Briefs Lead Gen, Social and Paid Ads for you</span></div></div>
-      <div class="chat" id="chat-log">${msgs || `<div class="msg msg-them">Hi ${esc(D.practice.owner)}. What would you like more of? Patients for a treatment, a campaign for a date, or a question about the numbers.</div>`}</div>
+    const mode = API.live ? `<span class="mode live"><i></i>Live AI${API.model ? ' · ' + esc(API.model) : ''}</span>` : `<span class="mode"><i></i>Demo mode: scripted replies. The live AI connects on the Cloudflare version.</span>`;
+    return `<div class="row"><span class="avatar avatar-lg" style="color:var(--gold)">✦</span><div><h2 id="drawer-title" style="font-size:20px">Head of Agents</h2>${mode}</div></div>
+      <div class="chat" id="chat-log">${msgs || `<div class="msg msg-them">Hi ${esc(D.practice.owner)}. What would you like more of? Patients for a treatment, a campaign for a date, or a question about the numbers.</div>
+        <div class="suggest"><button type="button" data-action="ask" data-q="Get more whitening patients before Christmas">More whitening before Christmas</button><button type="button" data-action="ask" data-q="What should we post next week?">What should we post next week?</button><button type="button" data-action="ask" data-q="How are we doing this month?">How are we doing?</button></div>`}</div>
       <form class="ask chat-input" data-form="chat"><label for="chat-input" style="position:absolute;left:-9999px">Message Head of Agents</label>
-        <input id="chat-input" name="q" type="text" autocomplete="off" placeholder="Reply to the Head of Agents"><button class="btn btn-dark" type="submit">Send</button></form>`;
+        <input id="chat-input" name="q" type="${S.awaitPass ? 'password' : 'text'}" autocomplete="off" placeholder="${S.awaitPass ? 'Demo passcode' : 'Reply to the Head of Agents'}"><button class="btn btn-dark" type="submit">Send</button></form>`;
   }
   function planCard(m) {
     const p = m.plan;
     const state = m.state || 'open';
-    return `<div class="msg msg-them">${esc(p.intro)}</div>
+    return `<div class="msg msg-them">${mdLite(p.intro || 'Here’s the plan.')}</div>
+      ${m.agents && m.agents.length ? `<div class="briefed">Briefed: ${esc(m.agents.join(', '))}</div>` : ''}
       <div class="plan-card">
-        <div><b>The plan</b><div class="small muted">Each step has the reason behind it. Proofread and checked against UK ad rules.</div></div>
-        ${p.rows.map(r => `<div class="plan-row">${deskTag(r.desk)}<div>${esc(r.what)}<small>Why: ${esc(r.why)} · ${fmtShort(r.date)}</small></div></div>`).join('')}
+        <div><b>The plan</b><div class="small muted">Each step has the reason behind it. ${m.checks && m.checks.length ? 'Quality & Legal: ' + esc(m.checks.join(' · ')) : 'Proofread and checked against UK ad rules.'}</div></div>
+        ${p.rows.map(r => `<div class="plan-row">${deskTag(r.desk)}<div>${esc(r.what)}<small>Why: ${esc(r.why)}${r.date ? ' · ' + fmtShort(r.date) : ''}</small></div></div>`).join('')}
         <div class="row wrap">${state === 'open'
           ? `<button class="btn btn-dark btn-sm" type="button" data-action="plan-approve" data-mid="${m.id}">Approve and add to calendar</button><button class="btn btn-line btn-sm" type="button" data-action="plan-change" data-mid="${m.id}">Ask for changes</button>`
           : state === 'approved' ? `<span class="status"><i class="dot dot-always"></i>Approved. ${p.rows.length} items added to your calendar.</span>` : `<span class="status"><i class="dot dot-working"></i>Changes requested</span>`}</div>
       </div>`;
   }
   function renderChat() {
-    if (S.drawerKind !== 'chat') return;
+    if (S.drawerKind !== 'chat' || $('#drawer').hidden) return;
     $('#drawer-body').innerHTML = chatHtml();
     const log = $('#drawer'); log.scrollTop = log.scrollHeight;
     const inp = $('#chat-input'); inp && inp.focus();
@@ -375,25 +479,77 @@
     const dr = $('#drawer'); dr.scrollTop = dr.scrollHeight;
   }
   let mid = 0;
-  function sendChat(q) {
+  function contextForAI() {
+    return {
+      today: D.today,
+      practice: D.practice,
+      goal: D.goal,
+      stats: D.stats.map(s => `${s.label}: ${s.value} (${s.delta} ${s.note})`),
+      upcoming: S.calendar.filter(e => parse(e.date) >= TODAY).map(e => ({ date: e.date, desk: e.desk, title: e.title, status: e.status })),
+    };
+  }
+  function pushPlan(plan, extra) {
+    const rows = (plan.rows || []).filter(r => ['lead', 'social', 'ads'].includes(r.desk)).map(r => ({
+      desk: r.desk, what: r.what || r.title, why: r.why || '', title: r.title || r.what, date: /^\d{4}-\d{2}-\d{2}$/.test(r.date || '') ? r.date : D.today,
+    }));
+    S.chat.push(Object.assign({ kind: 'plan', id: ++mid, plan: { intro: plan.intro, rows } }, extra || {}));
+    S.history.push({ role: 'assistant', content: `${plan.intro || 'Plan'}\n` + rows.map(r => `- [${r.desk}] ${r.what} (${r.date}). Why: ${r.why}`).join('\n') });
+  }
+  function scriptedReply(q) {
+    let r = replyFor(q);
+    if (r.ask && S.pendingTopic && q.length < 40) r = { generic: q.toLowerCase().replace(/[^a-z ]/g, '').trim() || 'this' };
+    S.pendingTopic = false;
+    if (r.plan) pushPlan(PLANS[r.plan]);
+    else if (r.generic) pushPlan(genericPlan(r.generic));
+    else if (r.text) { S.chat.push({ from: 'them', html: r.text }); S.history.push({ role: 'assistant', content: r.text.replace(/<[^>]+>/g, '') }); }
+    else {
+      S.pendingTopic = true;
+      S.chat.push({ from: 'them', html: `Happy to. Before I brief the team, two quick questions:<ol><li>Which treatment matters most right now? Implants, Invisalign, whitening or something else?</li><li>Is there a date to work towards?</li></ol>
+        <div class="suggest" style="margin-top:10px"><button type="button" data-action="ask" data-q="Implants">Implants</button><button type="button" data-action="ask" data-q="Invisalign for the new year">Invisalign for the new year</button><button type="button" data-action="ask" data-q="Whitening before Christmas">Whitening before Christmas</button></div>` });
+    }
+  }
+  async function liveReply() {
+    const headers = { 'Content-Type': 'application/json' };
+    const pass = getPass(); if (pass) headers['x-demo-pass'] = pass;
+    const res = await fetch(API.base + '/api/chat', { method: 'POST', headers, body: JSON.stringify({ messages: S.history.slice(-20), context: contextForAI() }) });
+    if (res.status === 401) { S.awaitPass = true; S.chat.push({ from: 'them', html: 'This demo is protected. Type the demo passcode to continue.' }); return true; }
+    if (!res.ok) return false;
+    const j = await res.json();
+    if (j.plan && j.plan.rows && j.plan.rows.length) {
+      if (j.reply && j.reply !== j.plan.intro) j.plan.intro = j.plan.intro || j.reply;
+      pushPlan(j.plan, { agents: j.agents, checks: j.checks });
+    } else {
+      let html = mdLite(j.reply || '');
+      if (j.questions && j.questions.length) html += `<ol>${j.questions.map(x => `<li>${esc(x)}</li>`).join('')}</ol>`;
+      if (j.agents && j.agents.length) html += `<div class="tiny muted" style="margin-top:6px">Briefed: ${esc(j.agents.join(', '))}</div>`;
+      S.chat.push({ from: 'them', html });
+      S.history.push({ role: 'assistant', content: (j.reply || '') + (j.questions ? '\n' + j.questions.join('\n') : '') });
+    }
+    return true;
+  }
+  async function sendChat(q) {
     q = q.trim(); if (!q || S.chatBusy) return;
-    if (S.drawerKind !== 'chat') openChat();
-    S.chat.push({ from: 'me', html: esc(q) });
-    S.chat.push({ kind: 'typing' }); S.chatBusy = true; renderChat();
-    setTimeout(() => {
-      S.chat = S.chat.filter(m => m.kind !== 'typing'); S.chatBusy = false;
-      const r = S.pendingTopic ? { generic: q.toLowerCase().replace(/[^a-z ]/g, '').trim() || 'this' } : replyFor(q);
-      S.pendingTopic = false;
-      if (r.plan) S.chat.push({ kind: 'plan', id: ++mid, plan: PLANS[r.plan] });
-      else if (r.generic) S.chat.push({ kind: 'plan', id: ++mid, plan: genericPlan(r.generic) });
-      else if (r.text) S.chat.push({ from: 'them', html: r.text });
-      else {
-        S.pendingTopic = true;
-        S.chat.push({ from: 'them', html: `Happy to. Before I brief the team, two quick questions:<ol><li>Which treatment matters most right now? Implants, Invisalign, whitening or something else?</li><li>Is there a date to work towards?</li></ol>
-          <div class="suggest" style="margin-top:10px"><button type="button" data-action="ask" data-q="Implants">Implants</button><button type="button" data-action="ask" data-q="Invisalign for the new year">Invisalign for the new year</button><button type="button" data-action="ask" data-q="Whitening">Whitening</button></div>` });
-      }
-      renderChat();
-    }, 1100);
+    if (S.drawerKind !== 'chat' || $('#drawer').hidden) openChat();
+    if (S.awaitPass) {
+      S.awaitPass = false; setPass(q);
+      S.chat.push({ from: 'me', html: '••••••' });
+      q = (S.history.filter(h => h.role === 'user').slice(-1)[0] || {}).content || '';
+      S.history = S.history.slice(0, -1);
+      if (!q) { renderChat(); return; }
+    } else {
+      S.chat.push({ from: 'me', html: esc(q) });
+    }
+    S.history.push({ role: 'user', content: q });
+    S.chat.push({ kind: 'typing', note: API.live ? 'Briefing the desks. Plans take 10 to 25 seconds.' : '' }); S.chatBusy = true; renderChat();
+    let ok = false;
+    if (API.live) { try { ok = await liveReply(); } catch (e) { ok = false; } }
+    if (!ok) await new Promise(r => setTimeout(r, 900));
+    S.chat = S.chat.filter(m => m.kind !== 'typing'); S.chatBusy = false;
+    if (!ok) {
+      if (API.live) S.chat.push({ from: 'them', html: '<span class="tiny muted">The live AI didn’t answer, so here’s the demo reply.</span>' });
+      scriptedReply(q);
+    }
+    renderChat();
   }
 
   /* ================================================================
@@ -565,24 +721,28 @@
      SOCIAL
      ================================================================ */
   function viewSocial() {
-    const weekStart = parse('2026-11-02');
-    const weeks = [0, 1, 2].map(w => {
-      const days = [];
-      for (let i = 0; i < 7; i++) { const d = new Date(weekStart); d.setDate(d.getDate() + w * 7 + i); days.push(d); }
-      return days;
-    });
-    const weekHtml = days => `<div class="week">${days.map(d => {
-      const key = iso(d), posts = S.calendar.filter(e => e.desk === 'social' && e.date === key);
-      return `<div class="week-day ${key === D.today ? 'today' : ''}"><h4><b>${d.getDate()}</b>${DAYS[d.getDay()]}</h4>${posts.map(p => `
-        <button class="post ${p.status === 'done' ? 'is-done' : ''} ${p.status === 'idea' ? 'is-idea' : ''}" type="button" data-action="open-event" data-id="${p.id}">
-          <span class="post-thumb ${/Reel/.test(p.title) ? 'reel' : ''}">${/Reel/.test(p.title) ? '▶ Reel' : /carousel/i.test(p.title) ? 'Carousel' : 'Post'}</span>
-          <b>${esc(p.title.replace(/ \((Reel|carousel|Stories)\)/, ''))}</b>${statusEl(p.status)}</button>`).join('')}</div>`;
-    }).join('')}</div>`;
+    const posts = S.calendar.filter(e => e.desk === 'social').sort((a, b) => b.date.localeCompare(a.date));
+    const upcoming = posts.filter(p => parse(p.date) >= TODAY).sort((a, b) => a.date.localeCompare(b.date));
+    const GRAD = { reel: 'linear-gradient(160deg,#E98E62,#7F3A16)', carousel: 'linear-gradient(160deg,#F4D6C4,#D99A78)', post: 'linear-gradient(160deg,#FBE7DA,#E8B596)' };
+    const older = [['Smile makeover tips', 'reel'], ['Meet reception', 'post'], ['Why floss?', 'carousel'], ['Our new scanner', 'reel']];
+    const cells = posts.slice(0, 8).map(p => ({ t: cleanTitle(p.title), k: kindOf(p), next: parse(p.date) >= TODAY, idea: p.status === 'idea' }))
+      .concat(older.map(o => ({ t: o[0], k: o[1] }))).slice(0, 12);
     return `${deskHero('social', 'Posts that bring patients, not just likes.', 'Planned around what patients ask and what’s working in dental this week. You approve, then you press publish.', 'm-social')}
-      <section class="section"><div class="section-head"><h2>This week</h2><p>2 to 8 November</p></div>${weekHtml(weeks[0])}</section>
-      <section class="section"><div class="section-head"><h2>Next two weeks</h2><p>9 to 22 November</p></div>${weekHtml(weeks[1])}<div style="height:16px"></div>${weekHtml(weeks[2])}</section>
-      <section class="section"><div class="section-head"><h2>Ideas Lab</h2><p>Four watchers on Reels, TikTok and Shorts. What’s working in UK dental this week.</p></div>
-        <div class="ideas">${D.ideas.map(i => `<div class="idea"><span class="stat-big">${esc(i.stat)}</span><b>${esc(i.title)}</b><p>${esc(i.d)}</p></div>`).join('')}</div>
+      <section class="section feed-layout">
+        <div class="grid-phone rise"><div class="phone"><div class="screen">
+          <div class="ig-profile"><i></i><div><b>oakmeredental</b>Oakmere Dental · Maidenhead<br><span class="muted">Private dentist · Invisalign · Implants</span></div></div>
+          <div class="ig-grid">${cells.map((c, i) => `<div class="ig-cell ${c.next ? 'next' : ''}" style="--i:${i};background:${c.idea ? '#EEE7DD' : GRAD[c.k] || GRAD.post};${c.idea ? 'color:#8A8A85' : ''}">${esc(c.t)}</div>`).join('')}</div>
+        </div></div><p class="small muted" style="text-align:center;margin-top:12px">Your grid, with the next posts outlined in gold</p></div>
+        <div>
+          <div class="section-head"><h2>Coming up on your feed</h2><p>Gold dot means it needs you</p></div>
+          <div class="post-big">${upcoming.map((p, i) => `<div class="rise" style="--i:${i}"><span class="small muted">${fmtShort(p.date)}</span>${tile(p)}</div>`).join('')}</div>
+        </div>
+      </section>
+      <section class="section"><div class="section-head"><h2>Ideas Lab</h2><p>Four watchers on Reels, TikTok and Shorts report what’s working in UK dental this week.</p></div>
+        <div class="ideas">${D.ideas.map((it, i) => `<div class="idea2 rise" style="--i:${i}">
+          <svg class="rising" viewBox="0 0 200 34" preserveAspectRatio="none" aria-hidden="true"><path d="${sparkPath([3, 4, 3, 5, 6, 6, 8, 9 + i], 200, 34)}" fill="none" stroke="#C8622F" stroke-width="2.5" stroke-linecap="round"/></svg>
+          <span class="stat-big">${esc(it.stat)}</span><b>${esc(it.title)}</b><p class="small" style="color:var(--ink-2)">${esc(it.d)}</p>
+          ${i === 3 ? '<span class="status"><i class="dot dot-always"></i>Ad Rules checks every post</span>' : S.usedIdeas[i] ? '<span class="status"><i class="dot dot-working"></i>Added to your plan</span>' : `<button class="btn btn-line btn-sm" type="button" data-action="use-idea" data-i="${i}" style="align-self:flex-start">Use this idea</button>`}</div>`).join('')}</div>
         <p class="small muted" style="margin-top:12px">We watch public trends and summarise them. We don’t scrape or copy anyone’s content.</p></section>
       <section class="section charts">
         <div><div class="chart-title">People reached each week</div><div class="chart-sub">Thousands, Instagram and Facebook together.</div>
@@ -631,9 +791,56 @@
   function route() { const r = (location.hash || '#home').slice(1); return VIEWS[r] ? r : 'home'; }
   function render() {
     const r = route();
+    const key = r + (r === 'home' ? S.homeView : '');
+    const fresh = key !== S.lastView; S.lastView = key;
+    $('#view').classList.toggle('calm', !fresh);
     $('#view').innerHTML = VIEWS[r]();
     document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === r));
     if (S.drawerKind === 'chat') renderChat();
+    afterRender(fresh);
+  }
+
+  /* ---------------- Motion after each render ---------------- */
+  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function afterRender(fresh) {
+    document.querySelectorAll('.ring .fill[data-target]').forEach(c => {
+      if (fresh && !reduced) requestAnimationFrame(() => requestAnimationFrame(() => { c.style.strokeDashoffset = c.dataset.target; }));
+      else { c.style.transition = 'none'; c.style.strokeDashoffset = c.dataset.target; }
+    });
+    if (fresh && !reduced) document.querySelectorAll('[data-count]').forEach(el => {
+      const to = Number(el.dataset.count), pre = el.dataset.prefix || '', t0 = performance.now(), dur = 1100;
+      const step = now => { const p = Math.min(1, (now - t0) / dur), v = Math.round(to * (1 - Math.pow(1 - p, 3))); el.textContent = pre + v.toLocaleString('en-GB'); if (p < 1) requestAnimationFrame(step); };
+      requestAnimationFrame(step);
+    });
+    clearInterval(S.tick);
+    if ($('#live-msg')) {
+      let k = 0;
+      S.tick = setInterval(() => {
+        const box = $('#live-msg'); if (!box) { clearInterval(S.tick); return; }
+        k = (k + 1) % TICKER.length;
+        const el = document.createElement('div'); el.className = 'live-msg'; el.id = 'live-msg';
+        el.innerHTML = `${esc(TICKER[k][1])}<small>${esc(TICKER[k][0])}</small>`;
+        box.replaceWith(el);
+      }, 3400);
+    }
+  }
+  function burst(fromEl) {
+    if (reduced || !fromEl) return;
+    const r = fromEl.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const colors = ['#F2B23A', '#FFD27A', '#C8622F', '#0E9184', '#5560C9'];
+    for (let i = 0; i < 22; i++) {
+      const b = document.createElement('i'); b.className = 'burst';
+      const a = (Math.PI * 2 * i) / 22, dist = 70 + Math.random() * 90;
+      b.style.left = cx + 'px'; b.style.top = cy + 'px'; b.style.background = colors[i % colors.length];
+      b.style.setProperty('--dx', Math.cos(a) * dist + 'px'); b.style.setProperty('--dy', Math.sin(a) * dist + 'px');
+      document.body.appendChild(b); setTimeout(() => b.remove(), 950);
+    }
+  }
+  function approveNeed(id) {
+    const nd = S.needs.find(x => x.id === id); if (!nd) return;
+    if (nd.calId) setEventStatus(nd.calId, 'scheduled');
+    if (id === 'n2') { const r = S.recs.find(x => x.id === 'r1'); if (r) r.state = 'approved'; }
+    S.needs = S.needs.filter(x => x.id !== id);
   }
   window.addEventListener('hashchange', () => { if (!$('#drawer').hidden) closeDrawer(); render(); window.scrollTo(0, 0); });
 
@@ -656,6 +863,22 @@
       case 'add-on-day': openChat(`For ${fmtShort(el.dataset.date)}: `); break;
       case 'ask': sendChat(el.dataset.q); break;
       case 'chat-about': closeDrawer(); openChat(`About the ${el.dataset.name}: `); break;
+      case 'home-view': S.homeView = el.dataset.v; try { localStorage.setItem('marquee_home', S.homeView); } catch (e) { /* ignore */ } render(); window.scrollTo({ top: 0, behavior: 'smooth' }); break;
+      case 'deck-approve': {
+        const card = $('#focus'); burst(ev.target.closest('button'));
+        if (card) card.classList.add('fly');
+        setTimeout(() => { approveNeed(id); render(); }, card ? 420 : 0);
+        toast({ n1: 'Approved. Social will schedule it for this evening.', n2: 'Approved. £150 moves to Google Search from Monday.', n3: 'Thanks. Lead Gen will log the calls in HubSpot.' }[id] || 'Done.');
+        break;
+      }
+      case 'deck-skip': { const i = S.needs.findIndex(x => x.id === id); if (i > -1) S.needs.push(S.needs.splice(i, 1)[0]); render(); break; }
+      case 'deck-pick': { const i = S.needs.findIndex(x => x.id === id); if (i > -1) S.needs.unshift(S.needs.splice(i, 1)[0]); render(); const f = $('#focus'); f && f.scrollIntoView({ behavior: 'smooth', block: 'center' }); break; }
+      case 'use-idea': {
+        const i = Number(el.dataset.i), it = D.ideas[i]; S.usedIdeas[i] = true;
+        const dates = ['2026-11-18', '2026-11-21', '2026-11-26', '2026-11-28'];
+        S.calendar.push({ id: 'idea' + i, date: dates[i], desk: 'social', title: it.title + ' (Reel)', status: 'drafting', detail: `From the Ideas Lab: ${it.d}`, isNew: true });
+        render(); toast(`Added to ${fmtShort(dates[i])}. The Content Planner is on it.`); break;
+      }
       case 'need-approve': {
         const nd = S.needs.find(x => x.id === id);
         removeNeed(id, () => {
@@ -700,7 +923,7 @@
         m.plan.rows.forEach((r, i) => S.calendar.push({ id: `p${m.id}-${i}`, date: r.date, desk: r.desk, title: r.title, status: 'drafting', detail: `${r.what}. Why: ${r.why}`, isNew: true }));
         S.month = m.plan.rows[0].date.slice(0, 7);
         renderChat(); toast(`${m.plan.rows.length} items added to your calendar.`);
-        setTimeout(() => { closeDrawer(); if (route() !== 'home') location.hash = '#home'; else render(); setTimeout(() => { const c = $('#calendar'); c && c.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60); }, 900);
+        setTimeout(() => { closeDrawer(); S.homeView = 'wall'; if (route() !== 'home') location.hash = '#home'; else render(); setTimeout(() => { const c = $('#calendar'); c && c.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60); }, 900);
         break;
       }
       case 'plan-change': {
@@ -783,5 +1006,23 @@
       <div class="drawer-actions"><button class="btn btn-dark" type="button" data-action="send-changes" data-id="${id}">Send to the team</button></div>`, { focus: '#changes-text' });
   }
 
+  /* drag tiles between days on the Creative wall */
+  document.addEventListener('dragstart', ev => {
+    const t = ev.target.closest && ev.target.closest('.wall .tile[draggable="true"]'); if (!t) return;
+    ev.dataTransfer.setData('text/plain', t.dataset.id); ev.dataTransfer.effectAllowed = 'move'; t.classList.add('dragging');
+  });
+  document.addEventListener('dragend', ev => { const t = ev.target.closest && ev.target.closest('.tile'); if (t) t.classList.remove('dragging'); });
+  document.addEventListener('dragover', ev => { const d = ev.target.closest && ev.target.closest('[data-drop]'); if (!d) return; ev.preventDefault(); d.classList.add('over'); });
+  document.addEventListener('dragleave', ev => { const d = ev.target.closest && ev.target.closest('[data-drop]'); if (d && !d.contains(ev.relatedTarget)) d.classList.remove('over'); });
+  document.addEventListener('drop', ev => {
+    const d = ev.target.closest && ev.target.closest('[data-drop]'); if (!d) return;
+    ev.preventDefault();
+    const e = S.calendar.find(x => x.id === ev.dataTransfer.getData('text/plain'));
+    if (!e || e.date === d.dataset.day) { d.classList.remove('over'); return; }
+    e.date = d.dataset.day; render();
+    toast(`Moved to ${fmtShort(e.date)}. The ${deskName(e.desk)} desk will reschedule it.`);
+  });
+
   render();
+  checkApi();
 })();

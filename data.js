@@ -3,7 +3,7 @@
 
 window.DATA = {
   today: '2026-11-06',
-  product: 'Backroom',
+  product: 'Marquee',
   practice: { name: 'Oakmere Dental', town: 'Maidenhead', owner: 'Maya', ownerFull: 'Dr Maya Patel' },
   manager: { name: 'Sam', role: 'Your account manager' },
 
