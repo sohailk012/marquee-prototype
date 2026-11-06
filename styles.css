@@ -1076,3 +1076,20 @@ body[data-route="login"] .dock, body[data-route="login"] .topbar, body[data-rout
   .mnode, .mnode.center { position: relative; left: auto !important; top: auto !important; transform: none; width: 100%; }
   .mnode.active { transform: none; }
 }
+
+/* campaigns list */
+.vs-link { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 999px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: 14px; }
+.vs-link[aria-selected="true"] { background: #fff; color: var(--ink); box-shadow: 0 1px 4px rgba(40,36,80,.12); }
+.vs-count { font-size: 11px; background: var(--ink); color: #fff; border-radius: 999px; padding: 1px 7px; }
+.start-camp h2 { font-size: 26px; }
+.start-camp .lede { color: var(--ink-2); margin-top: 6px; }
+.camp-form .suggest { margin-top: 10px; }
+.camp-form .btn-big { margin-top: 16px; }
+.camp-list { display: flex; flex-direction: column; gap: 10px; }
+.camp-item { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 18px; border-radius: 20px; background: var(--glass); border: 1px solid var(--glass-edge); box-shadow: var(--glass-shadow); text-decoration: none; color: var(--ink); flex-wrap: wrap; }
+a.camp-item:hover { transform: translateY(-2px); }
+.camp-item b { font-size: 16px; } .camp-item p { font-size: 13.5px; color: var(--ink-2); margin-top: 2px; }
+.camp-item.past { opacity: .85; }
+.back-link { display: inline-block; margin-bottom: 12px; font-size: 14px; color: var(--ink-2); text-decoration: none; }
+.back-link:hover { color: var(--ink); }
+.suggest .btn { padding: 7px 14px; }

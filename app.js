@@ -34,6 +34,7 @@
     draft: null,
     setupStep: 0,
     campaign: null,
+    campaigns: [],
     campView: 'map',
     memory: [{ text: 'Prefers calm, reassuring wording', when: 'From set-up' }, { text: 'Never compare our prices with other practices', when: '12 Oct' }],
   };
@@ -176,8 +177,33 @@
   function viewHome() {
     return `<div class="topline rise"><span class="eyebrow">${DAYS_LONG[TODAY.getDay()]} ${TODAY.getDate()} ${MONTHS[TODAY.getMonth()]} · ${esc(D.practice.name)}</span></div>` + viewToday();
   }
-  function viewPlan() {
-    return `<div class="topline rise"><span class="eyebrow">Your marketing plan · ${esc(D.practice.name)}</span></div>` + viewWall();
+  const planTabs = on => `<div class="topline rise"><div class="view-switch" role="tablist" aria-label="Plan">
+      <a role="tab" class="vs-link" href="#plan" aria-selected="${on === 'cal'}">Calendar</a>
+      <a role="tab" class="vs-link" href="#campaigns" aria-selected="${on === 'camps'}">Campaigns${S.campaigns.length ? ` <span class="vs-count">${S.campaigns.length}</span>` : ''}</a></div>
+      <a class="btn btn-dark btn-sm" href="#campaigns">Plan a campaign</a></div>`;
+  function viewPlan() { return planTabs('cal') + viewWall(); }
+  const PAST_CAMPAIGNS = [
+    { title: 'November new patients push', status: 'Running', note: '12 of 40 consultations booked so far. On track.', dot: 'always' },
+    { title: 'Invisalign open evening, 19 Nov', status: 'Approved', note: '7 of 12 places booked. Ads start 16 Nov.', dot: 'always' },
+    { title: 'October whitening offer', status: 'Finished', note: '18 consultations at £31 each. What we learned is saved.', dot: 'idle' },
+  ];
+  function viewCampaigns() {
+    const stageLabel = c => c.approved ? 'Being made' : c.plan ? 'Plan ready for you' : c.stage === 'questions' ? 'Needs your answers' : 'Team is planning';
+    return planTabs('camps') + `
+      <section class="room-card start-camp rise">
+        <h2>Plan a new campaign</h2>
+        <p class="lede">Tell the team what you want. They’ll ask a few questions, research it, argue it through and bring you a plan with the reasons.</p>
+        <form data-form="new-campaign" class="camp-form">
+          <label class="field"><span>What do you want more of, and by when?</span><textarea name="brief" rows="2" placeholder="e.g. More implant patients before Christmas"></textarea></label>
+          <div class="suggest">${['More implant patients before Christmas', 'A new year Invisalign campaign', 'Fill quiet Tuesday afternoons', 'Get more Google reviews'].map(x => `<button type="button" data-action="camp-suggest" data-q="${esc(x)}">${esc(x)}</button>`).join('')}</div>
+          <button class="btn btn-dark btn-big" type="submit">Start planning</button>
+        </form>
+      </section>
+      <section class="section"><div class="section-head"><h2>Your campaigns</h2><p>Tap one to see the plan and the work behind it.</p></div>
+        <div class="camp-list">
+          ${S.campaigns.map(c => `<a class="camp-item" href="#campaign" data-action="open-campaign" data-id="${c.id}"><div><b>${esc(c.T.one.charAt(0).toUpperCase() + c.T.one.slice(1))} campaign</b><p>“${esc(c.brief)}”</p></div><span class="status"><i class="dot dot-${c.plan && !c.approved ? 'needs' : 'working'}"></i>${stageLabel(c)}</span></a>`).join('')}
+          ${PAST_CAMPAIGNS.map(c => `<div class="camp-item past"><div><b>${esc(c.title)}</b><p>${esc(c.note)}</p></div><span class="status"><i class="dot dot-${c.dot}"></i>${c.status}</span></div>`).join('')}
+        </div></section>`;
   }
   const DESK_TABS = [['lead', 'New patients'], ['social', 'Social media'], ['ads', 'Ads']];
   function viewDesks() {
@@ -260,6 +286,7 @@
           <input id="ask-input" name="q" type="text" autocomplete="off" placeholder="What do you need? e.g. more implant patients">
           <button class="btn btn-dark" type="submit">Ask</button></form>
         <div class="suggest" style="margin-top:10px">
+          <a class="btn btn-dark btn-sm" href="#campaigns">Plan a campaign</a>
           <button type="button" data-action="ask" data-q="Plan a new year smile campaign">New year campaign</button>
           <button type="button" data-action="ask" data-q="We need more implant patients">More implant patients</button>
           <button type="button" data-action="ask" data-q="How is the ad budget doing?">How’s the budget?</button>
@@ -677,7 +704,8 @@
   }
   function startCampaign(brief) {
     const T = topicOf(brief);
-    S.campaign = { id: Date.now(), brief, T, stage: 'questions', answers: {}, feed: [], findings: [], proposals: [], debate: [], version: 1, changes: [], assets: [], approved: false };
+    S.campaign = { id: Date.now(), brief, T, stage: 'questions', answers: {}, feed: [], findings: [], proposals: [], debate: [], version: 1, changes: [], assets: [], approved: false, started: 'Today' };
+    S.campaigns.unshift(S.campaign);
   }
   const QUESTIONS = c => [
     ['goal', `What would success look like? (${c.T.many})`, ['15', '25', '40']],
@@ -724,7 +752,6 @@
       c.stage = stage;
       c.feed.push({ stage, who, text });
       renderCampaign();
-      const el = document.querySelector('.feed-line:last-child'); if (el && route() === 'campaign') el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       setTimeout(step, stage === 'research' ? 1500 : 1900);
     };
     setTimeout(step, 600);
@@ -785,12 +812,12 @@
 
   function viewCampaign() {
     const c = S.campaign;
-    if (!c) return `<div class="page-head"><span class="eyebrow">Campaign room</span><h1>No campaign yet</h1><p class="lede">Press Ask and tell the team what you want more of.</p></div>`;
+    if (!c) return viewCampaigns();
     const idx = STAGES.findIndex(s => s[0] === c.stage);
     const rail = `<ol class="stage-rail">${STAGES.map(([k, l], n) => `<li class="${n < idx ? 'done' : n === idx ? 'now' : ''}"><i></i><span>${l}</span></li>`).join('')}</ol>`;
     const feedFor = st => c.feed.filter(f => f.stage === st).map(f => `<div class="feed-line ${f.who === 'challenger' ? 'challenge' : ''}">${fmtAg(f.who)}<p>${esc(f.text)}</p></div>`).join('');
     const working = st => c.stage === st ? `<div class="feed-line working"><span class="typing"><i></i><i></i><i></i></span><p class="muted">Working…</p></div>` : '';
-    let html = `<div class="page-head"><span class="eyebrow">Campaign room · plan v${c.version}</span><h1>${esc(c.T.one.charAt(0).toUpperCase() + c.T.one.slice(1))} campaign</h1>
+    let html = `<a class="back-link" href="#campaigns">← All campaigns</a><div class="page-head"><span class="eyebrow">Campaign room · plan v${c.version}</span><h1>${esc(c.T.one.charAt(0).toUpperCase() + c.T.one.slice(1))} campaign</h1>
       <p class="lede">You asked: “${esc(c.brief)}”</p></div>${rail}
       ${c.stage !== 'questions' ? `<div class="view-switch" role="group" aria-label="View" style="margin:0 0 12px"><button type="button" data-action="camp-view" data-v="map" aria-pressed="${S.campView === 'map'}">Live map</button><button type="button" data-action="camp-view" data-v="story" aria-pressed="${S.campView !== 'map'}">Story</button></div>` : ''}
       ${c.stage !== 'questions' && S.campView === 'map' ? `<section class="room-card map-card">${campMap(c)}</section>` : ''}
@@ -1322,7 +1349,7 @@
   /* ================================================================
      ROUTER
      ================================================================ */
-  const VIEWS = { home: viewHome, plan: viewPlan, desks: viewDesks, team: viewTeam, setup: viewSetup, campaign: viewCampaign };
+  const VIEWS = { home: viewHome, plan: viewPlan, desks: viewDesks, team: viewTeam, setup: viewSetup, campaign: viewCampaign, campaigns: viewCampaigns };
   function route() {
     let [r, sub] = (location.hash || '#home').slice(1).split('/');
     if (['lead', 'social', 'ads'].includes(r)) { sub = r; r = 'desks'; }
@@ -1343,7 +1370,7 @@
     $('#view').classList.toggle('calm', !fresh);
     document.body.dataset.route = r;
     $('#view').innerHTML = VIEWS[r]();
-    document.querySelectorAll('[data-nav]').forEach(a => { const on = a.dataset.nav === r; a.classList.toggle('on', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+    document.querySelectorAll('[data-nav]').forEach(a => { const on = a.dataset.nav === (['campaigns', 'campaign'].includes(r) ? 'plan' : r); a.classList.toggle('on', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     moveLens();
     if (S.drawerKind === 'chat') renderChat();
     afterRender(fresh);
@@ -1424,6 +1451,8 @@
       case 'chat-about': closeDrawer(); openChat(`About the ${el.dataset.name}: `); break;
       case 'go': if (!$('#drawer').hidden) closeDrawer(); location.hash = el.dataset.href; break;
       case 'teach': teachDrawer(id); break;
+      case 'camp-suggest': { const t = document.querySelector('[data-form=new-campaign] textarea'); if (t) { t.value = el.dataset.q; t.focus(); } break; }
+      case 'open-campaign': { const c = S.campaigns.find(x => String(x.id) === el.dataset.id); if (c) S.campaign = c; break; }
       case 'camp-view': S.campView = el.dataset.v; render(); break;
       case 'camp-answer': if (S.campaign && S.campaign.stage === 'questions') { S.campaign.answers[el.dataset.k] = el.dataset.v; render(); } break;
       case 'camp-go': if (S.campaign) { S.campaign.stage = 'research'; render(); runCampaign(); } break;
@@ -1570,6 +1599,7 @@
     const f = ev.target.closest('[data-form]'); if (!f) return;
     ev.preventDefault();
     if (f.dataset.form === 'login') { submitLogin(f); return; }
+    if (f.dataset.form === 'new-campaign') { const b = f.brief.value.trim(); if (!b) { toast('Tell the team what you want first.'); return; } startCampaign(b); location.hash = '#campaign'; return; }
     const inp = f.querySelector('input'); const q = inp.value; inp.value = '';
     if (f.dataset.form === 'ask' && !q.trim()) { openChat(); return; }
     sendChat(q);
