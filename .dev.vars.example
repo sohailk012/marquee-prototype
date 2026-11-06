@@ -1,2 +1,8 @@
-ANTHROPIC_API_KEY=
+# Copy to .dev.vars for local testing (never commit .dev.vars). See BACKEND.md.
+AI_PROVIDER=workers
+# ANTHROPIC_API_KEY=
+SUPABASE_URL=
+SUPABASE_ANON_KEY=
 DEMO_PASSCODE=
+ALLOW_OPEN=
+ALLOW_LOCALHOST=1

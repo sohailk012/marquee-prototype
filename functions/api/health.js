@@ -1,17 +1,24 @@
 /* GET /api/health: tells the frontend whether live AI is available.
- * { ok: true, configured: boolean, model: string, passcodeRequired: boolean }
- * Never returns the key or the passcode. */
+ * { ok: true, configured, provider, model, passcodeRequired, authRequired }
+ * Never returns keys, the passcode or any Supabase details. */
 
-import { DEFAULT_MODEL, corsHeaders, json } from './chat.js';
+import { json, options } from '../_lib/http.js';
+import { providerInfo } from '../_lib/providers.js';
+import { authConfigured } from '../_lib/security.js';
 
 export async function onRequestGet({ request, env }) {
   env = env || {};
+  const { provider, model, configured } = providerInfo(env);
+  const authRequired = authConfigured(env);
   return json(
     {
       ok: true,
-      configured: Boolean(env.ANTHROPIC_API_KEY),
-      model: env.MODEL || DEFAULT_MODEL,
-      passcodeRequired: Boolean(env.DEMO_PASSCODE),
+      configured,
+      provider,
+      model,
+      // Login replaces the passcode when Supabase is configured.
+      passcodeRequired: !authRequired && Boolean(env.DEMO_PASSCODE),
+      authRequired,
     },
     200,
     request,
@@ -20,5 +27,5 @@ export async function onRequestGet({ request, env }) {
 }
 
 export async function onRequestOptions({ request, env }) {
-  return new Response(null, { status: 204, headers: corsHeaders(request, env || {}) });
+  return options(request, env || {});
 }

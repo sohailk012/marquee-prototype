@@ -4,6 +4,7 @@
 (function () {
   'use strict';
   const D = window.DATA;
+  const CFG = window.MARQUEE_CONFIG || {};
 
   /* ---------------- State ---------------- */
   const S = {
@@ -29,6 +30,9 @@
     customSkills: {},
     skillQuery: '',
     K: null,
+    profile: null,
+    draft: null,
+    setupStep: 0,
   };
 
   /* ---------------- Helpers ---------------- */
@@ -102,7 +106,7 @@
       g += `<path class="bar" d="${path}" fill="${o.color}" opacity="${last ? 1 : 0.78}"/>`;
       if (last) g += `<text class="val-label" x="${x + barW / 2}" y="${y - 7}" text-anchor="middle">${esc(o.fmt ? o.fmt(d.v) : d.v)}</text>`;
       if (data.length <= 10 || i % 2 === 0) g += `<text class="axis-label" x="${x + barW / 2}" y="${H - 6}" text-anchor="middle">${esc(d.label)}</text>`;
-      g += `<rect class="hit" x="${pl + i * bw}" y="${pt}" width="${bw}" height="${ih}" data-tip="<b>${esc(o.fmt ? o.fmt(d.v) : d.v)}</b> ${esc(o.unit || '')} · ${esc(o.tipPrefix || '')}${esc(d.label)}"/>`;
+      g += `<rect class="hit" x="${pl + i * bw}" y="${pt}" width="${bw}" height="${ih}" data-tip="<b>${esc(esc(o.fmt ? o.fmt(d.v) : d.v))}</b> ${esc(esc(o.unit || ''))} · ${esc(esc(o.tipPrefix || ''))}${esc(esc(d.label))}"/>`;
     });
     const rows = data.map(d => `<tr><td>${esc(d.label)}</td><td class="num">${esc(o.fmt ? o.fmt(d.v) : d.v)}</td></tr>`).join('');
     const id = 'tbl-' + Math.random().toString(36).slice(2, 8);
@@ -439,11 +443,16 @@
 
   /* Live AI connection (Cloudflare Pages Function, see BACKEND.md). Falls back to scripted. */
   const API = { base: '', live: false, checked: false, model: null };
+  /* Only these backends may ever receive chat messages (stops a crafted ?api= link redirecting them). */
+  const API_ALLOWED = ['', 'https://marquee-prototype.pages.dev', 'http://localhost:8788'].concat(CFG.apiBase ? [CFG.apiBase] : []);
+  const toOrigin = v => { try { return v ? new URL(v).origin : ''; } catch (e) { return null; } };
   try {
     const qp = new URLSearchParams(location.search).get('api');
-    if (qp) localStorage.setItem('marquee_api', qp.replace(/\/$/, ''));
-    API.base = localStorage.getItem('marquee_api') || '';
-  } catch (e) { /* storage blocked: same-origin only */ }
+    if (qp !== null && API_ALLOWED.includes(toOrigin(qp))) localStorage.setItem('marquee_api', toOrigin(qp));
+    const saved = localStorage.getItem('marquee_api') || CFG.apiBase || '';
+    API.base = API_ALLOWED.includes(saved) ? saved : '';
+    if (saved && !API_ALLOWED.includes(saved)) localStorage.removeItem('marquee_api');
+  } catch (e) { API.base = API_ALLOWED.includes(CFG.apiBase || '') ? (CFG.apiBase || '') : ''; }
   function checkApi() {
     fetch(API.base + '/api/health', { cache: 'no-store' })
       .then(r => (r.ok ? r.json() : null))
@@ -497,6 +506,7 @@
     return {
       today: D.today,
       practice: D.practice,
+      profile: S.profile,
       goal: D.goal,
       stats: D.stats.map(s => `${s.label}: ${s.value} (${s.delta} ${s.note})`),
       upcoming: S.calendar.filter(e => parse(e.date) >= TODAY).map(e => ({ date: e.date, desk: e.desk, title: e.title, status: e.status })),
@@ -525,7 +535,10 @@
   async function liveReply() {
     const headers = { 'Content-Type': 'application/json' };
     const pass = getPass(); if (pass) headers['x-demo-pass'] = pass;
+    if (AUTH.session) headers.Authorization = 'Bearer ' + AUTH.session.access_token;
     const res = await fetch(API.base + '/api/chat', { method: 'POST', headers, body: JSON.stringify({ messages: S.history.slice(-20), context: contextForAI() }) });
+    if (res.status === 401 && AUTH.client) { S.chat.push({ from: 'them', html: 'Your sign-in has expired. Please sign in again.' }); AUTH.client.auth.signOut(); return true; }
+    if (res.status === 401 && (await res.clone().json().catch(() => ({}))).error !== 'unauthorised') return false;
     if (res.status === 401) { S.awaitPass = true; S.chat.push({ from: 'them', html: 'This demo is protected. Type the demo passcode to continue.' }); return true; }
     if (!res.ok) return false;
     const j = await res.json();
@@ -635,6 +648,163 @@
   }
 
   /* ================================================================
+     LOGIN: Supabase Auth, invite-only. Switched on by filling in config.js.
+     ================================================================ */
+  const AUTH = { client: null, session: null, ready: false, configured: !!(CFG.supabaseUrl && CFG.supabaseAnonKey), demo: false, msg: '', mode: 'password', busy: false };
+  try { AUTH.demo = sessionStorage.getItem('marquee_demo') === '1'; } catch (e) { /* ignore */ }
+  function loadScript(src) { return new Promise((ok, bad) => { const t = document.createElement('script'); t.src = src; t.onload = ok; t.onerror = bad; document.head.appendChild(t); }); }
+  async function initAuth() {
+    if (!AUTH.configured) { AUTH.ready = true; return; }
+    try {
+      await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js');
+      AUTH.client = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, { auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true } });
+      const { data } = await AUTH.client.auth.getSession();
+      AUTH.session = data.session;
+      AUTH.client.auth.onAuthStateChange((_e, session) => { AUTH.session = session; render(); });
+      if (location.search.includes('code=')) history.replaceState(null, '', location.pathname + location.hash);
+    } catch (e) { AUTH.msg = 'We couldn’t reach the sign-in service. Check your connection and try again.'; }
+    AUTH.ready = true;
+  }
+  const signedIn = () => !!AUTH.session || (!AUTH.configured && AUTH.demo);
+  function viewLogin() {
+    if (!AUTH.ready) return `<div class="login"><div class="login-card"><p class="muted">Loading…</p></div></div>`;
+    const mode = AUTH.mode;
+    if (!AUTH.configured) return `<div class="login"><div class="login-card rise">
+      <span class="brand-name">Marquee</span><span class="bulbs" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <h1>Sign in to your marketing team</h1>
+      <p class="lede">Sign-in isn’t switched on for this demo copy yet. When it is, only people you invite can get in.</p>
+      <button class="btn btn-dark btn-big" type="button" data-action="enter-demo" style="width:100%">View the demo</button>
+      <p class="tiny muted" style="margin-top:14px">Everything inside is made up. Oakmere Dental is a pretend practice.</p></div></div>`;
+    return `<div class="login"><form class="login-card rise" data-form="login" novalidate>
+      <span class="brand-name">Marquee</span><span class="bulbs" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <h1>${mode === 'reset' ? 'Reset your password' : 'Sign in to your marketing team'}</h1>
+      <p class="lede">${mode === 'link' ? 'We’ll email you a link. Tap it and you’re in.' : mode === 'reset' ? 'We’ll email you a link to choose a new password.' : 'Use the email your account manager invited.'}</p>
+      <label class="field"><span>Email</span><input type="email" name="email" autocomplete="email" required value="${esc(AUTH.email || '')}"></label>
+      ${mode === 'password' ? `<label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>` : ''}
+      ${AUTH.msg ? `<p class="login-msg" role="alert">${esc(AUTH.msg)}</p>` : ''}
+      <button class="btn btn-dark btn-big" type="submit" style="width:100%;margin-top:18px" ${AUTH.busy ? 'disabled' : ''}>${AUTH.busy ? 'One moment…' : mode === 'password' ? 'Sign in' : 'Email me the link'}</button>
+      <div class="login-alt">${mode !== 'password' ? '<button class="link" type="button" data-action="auth-mode" data-m="password">Sign in with a password</button>' : '<button class="link" type="button" data-action="auth-mode" data-m="link">Email me a sign-in link instead</button><button class="link" type="button" data-action="auth-mode" data-m="reset">Forgot password?</button>'}</div>
+      <p class="tiny muted" style="margin-top:14px">Invite only. No account? Ask your account manager.</p>
+    </form></div>`;
+  }
+  async function submitLogin(form) {
+    const email = form.email.value.trim(), pw = form.password ? form.password.value : '';
+    AUTH.email = email;
+    if (!/^\S+@\S+\.\S+$/.test(email)) { AUTH.msg = 'Please enter a valid email address.'; render(); return; }
+    AUTH.busy = true; AUTH.msg = ''; render();
+    const redirectTo = location.origin + location.pathname;
+    let error;
+    if (AUTH.mode === 'password') ({ error } = await AUTH.client.auth.signInWithPassword({ email, password: pw }));
+    else if (AUTH.mode === 'link') ({ error } = await AUTH.client.auth.signInWithOtp({ email, options: { shouldCreateUser: false, emailRedirectTo: redirectTo } }));
+    else ({ error } = await AUTH.client.auth.resetPasswordForEmail(email, { redirectTo }));
+    AUTH.busy = false;
+    if (error) AUTH.msg = AUTH.mode === 'password' ? 'That email and password don’t match. Try again, or use a sign-in link.' : 'We couldn’t send that. Check the email address is the one you were invited with.';
+    else if (AUTH.mode !== 'password') AUTH.msg = 'Check your email for the link.';
+    render();
+  }
+  async function signOut() {
+    if (AUTH.client) await AUTH.client.auth.signOut();
+    AUTH.session = null; AUTH.demo = false; try { sessionStorage.removeItem('marquee_demo'); } catch (e) { /* ignore */ }
+    closeDrawer(); render();
+  }
+
+  /* ================================================================
+     ONBOARDING: set up your business (route #setup)
+     ================================================================ */
+  const SEED_PROFILE = {
+    owner: 'Maya', business: 'Oakmere Dental', area: 'Maidenhead', type: 'dental',
+    offers: { Invisalign: '2,950', Implants: '2,400', Whitening: '295' },
+    goalWhat: 'Invisalign', goalCount: 40, budget: 2400,
+    tone: 'calm', avoid: 'Cheap, painless, best in Berkshire',
+    connected: { website: true, instagram: true, facebook: true, gbp: true, gads: true, hubspot: true, pms: true },
+    approver: 'me', dailyCap: 80, quiet: true, alertBy: 'text',
+  };
+  const BIZ_TYPES = [['dental', 'Dental practice'], ['clinic', 'Clinic or therapist'], ['trades', 'Trades and home services'], ['property', 'Estate or letting agent'], ['other', 'Something else']];
+  const OFFERS = { dental: ['Invisalign', 'Implants', 'Whitening', 'Veneers', 'Check-ups', 'Emergency appointments'], clinic: ['First appointment', 'Treatment course', 'Memberships'], trades: ['New boiler', 'Kitchen', 'Bathroom', 'Roof', 'Repairs'], property: ['Valuations', 'Lettings', 'Sales'], other: ['Main service', 'Second service'] };
+  const TONES = [
+    ['calm', 'Calm and reassuring', 'Nervous about the dentist? Most of our patients were too. Here’s what your first visit looks like.'],
+    ['friendly', 'Friendly and chatty', 'Fancy a straighter smile by summer? Pop in for a free chat, the kettle’s on.'],
+    ['polished', 'Polished and premium', 'Considered, precise care, close to home. Book a private consultation with our team.'],
+  ];
+  const CONNECTIONS = [['website', 'Your website', 'So enquiries land in one place'], ['instagram', 'Instagram', 'To plan and publish posts'], ['facebook', 'Facebook', 'Posts and ads'], ['gbp', 'Google listing', 'Reviews and your map listing'], ['gads', 'Google ads', 'To run and check your ads'], ['hubspot', 'HubSpot', 'Your enquiry list'], ['pms', 'Practice diary (Dentally)', 'So we know who booked and turned up']];
+  const SETUP_STEPS = ['Your business', 'What you sell', 'Your goal', 'How you sound', 'Where you are online', 'Your rules', 'All set'];
+
+  function loadProfile() { try { const p = JSON.parse(localStorage.getItem('marquee_profile') || 'null'); return p && p.business ? p : null; } catch (e) { return null; } }
+  function saveProfile() { try { localStorage.setItem('marquee_profile', JSON.stringify(S.profile)); } catch (e) { /* ignore */ } }
+  function applyProfile() {
+    const p = S.profile; if (!p) return;
+    D.practice.owner = p.owner || D.practice.owner; D.practice.name = p.business || D.practice.name; D.practice.town = p.area || D.practice.town;
+    document.querySelectorAll('.client').forEach(el => { el.textContent = D.practice.name; });
+  }
+
+  function viewSetup() {
+    const p = S.draft, i = S.setupStep, last = SETUP_STEPS.length - 1;
+    const chip = (name, val, label, on) => `<button type="button" class="opt ${on ? 'on' : ''}" data-action="setup-pick" data-name="${name}" data-val="${esc(val)}" aria-pressed="${!!on}">${esc(label)}</button>`;
+    let body = '';
+    if (i === 0) body = `<h1>Let’s get to know your business</h1><p class="lede">This takes about 5 minutes. You can change anything later.</p>
+      <div class="form-grid">
+        <label class="field"><span>Your first name</span><input data-field="owner" value="${esc(p.owner || '')}" placeholder="e.g. Maya" autocomplete="given-name"></label>
+        <label class="field"><span>Business name</span><input data-field="business" value="${esc(p.business || '')}" placeholder="e.g. Oakmere Dental" autocomplete="organization"></label>
+        <label class="field"><span>Town or area you serve</span><input data-field="area" value="${esc(p.area || '')}" placeholder="e.g. Maidenhead"></label>
+      </div>
+      <div class="field"><span>What kind of business is it?</span><div class="opts">${BIZ_TYPES.map(([v, l]) => chip('type', v, l, p.type === v)).join('')}</div></div>`;
+    if (i === 1) body = `<h1>What do you want more of?</h1><p class="lede">Pick the things you sell. Add a “from” price if you show one publicly. We only ever use the prices you give us.</p>
+      <div class="offer-list">${(OFFERS[p.type] || OFFERS.other).map(o => { const on = p.offers && o in p.offers; return `<div class="offer ${on ? 'on' : ''}">
+        <button type="button" class="opt ${on ? 'on' : ''}" data-action="setup-offer" data-val="${esc(o)}" aria-pressed="${on}">${esc(o)}</button>
+        ${on ? `<label class="price"><span>from £</span><input data-offer="${esc(o)}" inputmode="numeric" value="${esc(p.offers[o] || '')}" placeholder="optional" aria-label="${esc(o)} price from"></label>` : ''}</div>`; }).join('')}</div>`;
+    if (i === 2) { const picks = Object.keys(p.offers || {}); body = `<h1>What does a good month look like?</h1><p class="lede">This becomes the goal on your Today screen. We’ll tell you each week if we’re on track.</p>
+      <div class="field"><span>What should we focus on first?</span><div class="opts">${(picks.length ? picks : ['New customers']).map(o => chip('goalWhat', o, o, p.goalWhat === o)).join('')}</div></div>
+      <label class="field"><span>How many consultations or bookings a month would make you happy?</span><input type="number" min="1" max="999" data-field="goalCount" value="${esc(p.goalCount || '')}" style="max-width:160px"></label>
+      <label class="field"><span>Monthly ad budget: <b id="budget-out">£${n(Number(p.budget || 0))}</b> <small class="muted">(paid straight to Google and Facebook, not to us)</small></span>
+        <input type="range" min="0" max="5000" step="100" data-field="budget" value="${esc(p.budget || 0)}"></label>
+      <p class="small muted">Not sure? Most practices like yours start between £1,000 and £2,500 a month. We can start lower and grow it once it works.</p>`; }
+    if (i === 3) { const t = TONES.find(x => x[0] === p.tone) || TONES[0]; body = `<h1>How should you sound?</h1><p class="lede">Your writer uses this for every post, ad and email.</p>
+      <div class="tone-grid">${TONES.map(([v, l, ex]) => `<button type="button" class="tone ${p.tone === v ? 'on' : ''}" data-action="setup-pick" data-name="tone" data-val="${v}" aria-pressed="${p.tone === v}"><b>${l}</b><span>“${esc(ex)}”</span></button>`).join('')}</div>
+      <label class="field"><span>Words or claims we should never use</span><input data-field="avoid" value="${esc(p.avoid || '')}" placeholder="e.g. cheap, painless, best in town"></label>
+      <div class="sample card card-soft"><span class="tiny muted">How a post might start</span><p>${esc(t[2])}</p></div>`; }
+    if (i === 4) body = `<h1>Where are you online?</h1><p class="lede">Connecting lets the team see what’s working and save you typing. In this demo, the buttons just pretend. In the real thing you sign in to each one and can disconnect any time.</p>
+      <div class="connect-grid">${CONNECTIONS.map(([k, l, d]) => { const on = p.connected && p.connected[k]; return `<div class="connect ${on ? 'on' : ''}"><div><b>${l}</b><span>${d}</span></div>
+        <button type="button" class="btn ${on ? 'btn-line' : 'btn-dark'} btn-sm" data-action="setup-connect" data-val="${k}">${on ? 'Connected ✓' : 'Connect'}</button></div>`; }).join('')}</div>
+      <p class="small muted" style="margin-top:12px">Skip any you don’t use. We never post or spend without your OK.</p>`;
+    if (i === 5) body = `<h1>Your rules</h1><p class="lede">The team works within these. Change them whenever you like.</p>
+      <div class="field"><span>Who approves posts and ads?</span><div class="opts">${chip('approver', 'me', 'Just me', p.approver === 'me')}${chip('approver', 'me+manager', 'Me or my practice manager', p.approver === 'me+manager')}</div></div>
+      <label class="field"><span>Most we can spend on ads in one day: <b id="cap-out">£${n(Number(p.dailyCap || 0))}</b></span><input type="range" min="10" max="300" step="10" data-field="dailyCap" value="${esc(p.dailyCap || 80)}"></label>
+      <div class="field"><span>How should we reach you if something is urgent?</span><div class="opts">${chip('alertBy', 'text', 'Text message', p.alertBy === 'text')}${chip('alertBy', 'whatsapp', 'WhatsApp', p.alertBy === 'whatsapp')}${chip('alertBy', 'email', 'Email only', p.alertBy === 'email')}</div></div>
+      <label class="check"><input type="checkbox" data-field="quiet" ${p.quiet ? 'checked' : ''}> Don’t contact me between 8pm and 7am unless it’s about money</label>`;
+    if (i === last) body = `<h1>You’re all set, ${esc(p.owner || 'there')}.</h1><p class="lede">Here’s what your team does in the next 48 hours.</p>
+      <ol class="next48">
+        <li><b>Today</b> Your marketing lead reads everything you told us and writes your first monthly plan.</li>
+        <li><b>Tomorrow morning</b> The new patients team sets up quick replies, so every enquiry gets a text within 2 minutes.</li>
+        <li><b>Tomorrow</b> The social media team drafts your first week of posts in your ${esc((TONES.find(x => x[0] === p.tone) || TONES[0])[1].toLowerCase())} voice.</li>
+        <li><b>Within 48 hours</b> Sam, your account manager, calls to check it all makes sense.</li>
+      </ol>
+      <div class="card card-soft summary-card"><b>${esc(p.business || '')}</b><span>${esc((BIZ_TYPES.find(b => b[0] === p.type) || [0, ''])[1])} · ${esc(p.area || '')}</span>
+        <span>Goal: ${esc(p.goalCount || '')} ${esc(p.goalWhat || '')} a month · Ads up to £${n(Number(p.budget || 0))} a month</span></div>`;
+    return `<div class="setup">
+      <div class="setup-top"><span class="eyebrow">Step ${i + 1} of ${SETUP_STEPS.length} · ${SETUP_STEPS[i]}</span>
+        <div class="setup-bar">${SETUP_STEPS.map((_, k) => `<i class="${k <= i ? 'on' : ''}"></i>`).join('')}</div></div>
+      <div class="setup-card rise">${body}</div>
+      <div class="setup-nav">${i > 0 && i < last ? `<button class="btn btn-line btn-big" type="button" data-action="setup-back">Back</button>` : '<span></span>'}
+        ${i < last ? `<button class="btn btn-dark btn-big" type="button" data-action="setup-next">${i === last - 1 ? 'Finish' : 'Next'}</button>` : `<button class="btn btn-dark btn-big" type="button" data-action="setup-done">Go to my Today screen</button>`}</div>
+      ${i === 0 ? `<p class="small muted" style="text-align:center;margin-top:14px"><button class="link" type="button" data-action="setup-demo">Skip and use the demo practice</button></p>` : ''}
+    </div>`;
+  }
+  function readSetupFields() {
+    document.querySelectorAll('.setup [data-field]').forEach(el => {
+      const k = el.dataset.field;
+      S.draft[k] = el.type === 'checkbox' ? el.checked : (el.type === 'number' || el.type === 'range') ? Number(el.value) : el.value.trim();
+    });
+    document.querySelectorAll('.setup [data-offer]').forEach(el => { S.draft.offers[el.dataset.offer] = el.value.replace(/[^\d,]/g, ''); });
+  }
+  function setupValid() {
+    const p = S.draft, i = S.setupStep;
+    if (i === 0 && (!p.owner || !p.business || !p.area || !p.type)) return 'Please fill in your name, business, area and type.';
+    if (i === 1 && !Object.keys(p.offers || {}).length) return 'Pick at least one thing you sell.';
+    if (i === 2 && (!p.goalWhat || !p.goalCount)) return 'Pick a focus and a number for the month.';
+    return '';
+  }
+
+  /* ================================================================
      TEAM
      ================================================================ */
   function node(a, extra) {
@@ -644,7 +814,8 @@
     const T = D.team;
     return `
     <div class="page-head"><span class="eyebrow">Your team</span><h1>Who’s who</h1>
-      <p class="lede">You only talk to your marketing lead. They pass the work to the right team. The same writers and designers work for every team, so everything sounds like Oakmere. Everything is checked before you see it.</p></div>
+      <p class="lede">You only talk to your marketing lead. They pass the work to the right team. The same writers and designers work for every team, so everything sounds like Oakmere. Everything is checked before you see it.</p>
+      <div class="row wrap" style="margin-top:6px"><a class="btn btn-dark btn-sm" href="#setup">Edit your business details</a><a class="btn btn-line btn-sm" href="#setup/new">Try set-up as a new business</a></div></div>
 
     <section class="section">
       <div class="org-top">
@@ -686,6 +857,7 @@
   }
   /* ---------------- Training (from agents/knowledge.js) ---------------- */
   const skillsOf = id => ((S.K && S.K.KNOWLEDGE && S.K.KNOWLEDGE[id]) || []).concat(S.customSkills[id] || []);
+  const safeUrl = u => (/^https:\/\//i.test(u || '') ? u : '');
   const srcOf = sid => (S.K && S.K.SOURCES && S.K.SOURCES[sid]) || null;
   function allAgents() {
     const T = D.team, out = [{ a: T.head, team: 'Your marketing lead' }];
@@ -698,7 +870,7 @@
     const srcs = (sk.sources || []).map(srcOf).filter(Boolean);
     return `<details class="skill" ${open ? 'open' : ''}><summary><b>${esc(sk.title)}</b><span>${esc(sk.summary || '')}</span></summary>
       ${sk.instructions ? `<div class="skill-how"><h5>How they do it</h5><p>${esc(sk.instructions)}</p></div>` : ''}
-      ${srcs.length ? `<div class="skill-src">Learned from: ${srcs.map(x => x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.name)}</a>` : esc(x.name)).join(' · ')}</div>` : sk.custom ? '<div class="skill-src">Added by you</div>' : ''}
+      ${srcs.length ? `<div class="skill-src">Learned from: ${srcs.map(x => safeUrl(x.url) ? `<a href="${esc(safeUrl(x.url))}" target="_blank" rel="noopener">${esc(x.name)}</a>` : esc(x.name)).join(' · ')}</div>` : sk.custom ? '<div class="skill-src">Added by you</div>' : ''}
     </details>`;
   }
   function trainingSection() {
@@ -718,7 +890,7 @@
         <div class="s-tile"><span class="stat-label">Skills they know</span><div class="stat-value">${total}</div><span class="stat-foot">tap anyone to see theirs</span></div>
         <div class="s-tile"><span class="stat-label">Where the know-how comes from</span><div class="stat-value">${sources.length}</div><span class="stat-foot">free, open guides by marketers</span></div>
       </div>
-      <div class="sources">${sources.map(([k, x]) => `<a class="source" ${x.url ? `href="${esc(x.url)}" target="_blank" rel="noopener"` : ''}><b>${esc(x.name)}</b><span>${esc(x.author || '')}${x.license ? ' · ' + esc(x.license) : ''}</span></a>`).join('')}</div>
+      <div class="sources">${sources.map(([k, x]) => `<a class="source" ${safeUrl(x.url) ? `href="${esc(safeUrl(x.url))}" target="_blank" rel="noopener"` : ''}><b>${esc(x.name)}</b><span>${esc(x.author || '')}${x.license ? ' · ' + esc(x.license) : ''}</span></a>`).join('')}</div>
       <div class="lib-head"><h3>All skills</h3><label class="lib-search"><span style="position:absolute;left:-9999px">Search skills</span><input type="search" id="skill-q" placeholder="Search, e.g. headlines, reviews, budget" value="${esc(S.skillQuery || '')}"></label></div>
       ${Object.keys(groups).length ? Object.entries(groups).map(([team, items]) => `<div class="lib-group"><h4>${esc(team)}</h4><div class="lib-grid">${items.map(({ a, sk }) =>
         `<button class="lib-item" type="button" data-action="agent" data-id="${a.id}"><span class="tiny muted">${esc(a.name)}</span><b>${esc(sk.title)}</b><span>${esc(sk.summary || '')}</span></button>`).join('')}</div></div>`).join('') : '<p class="empty">No skills match that.</p>'}
@@ -756,7 +928,7 @@
         <button class="btn btn-line btn-sm" type="button" data-action="teach" data-id="${id}" style="margin-top:10px">Teach them something</button></div>`}
       ${a.desk === 'quality' ? '' : `<div class="drawer-section"><h4>Checked before you see it</h4><ul class="checklist"><li>Spelling</li><li>Sounds like you</li><li>Advertising rules</li><li>Privacy and permission</li></ul></div>`}
       <div class="drawer-actions">${isHuman
-        ? `<button class="btn btn-dark" type="button" data-action="toast" data-msg="This would open WhatsApp with Sam.">Message Sam</button><button class="btn btn-line" type="button" data-action="toast" data-msg="Booked: monthly results call, Thu 26 Nov at 12:30.">Book a call</button>`
+        ? `<button class="btn btn-dark" type="button" data-action="toast" data-msg="This would open WhatsApp with Sam.">Message Sam</button><button class="btn btn-line" type="button" data-action="toast" data-msg="Booked: monthly results call, Thu 26 Nov at 12:30.">Book a call</button><button class="btn btn-ghost" type="button" data-action="sign-out">Sign out${AUTH.session ? ' (' + esc(AUTH.session.user.email) + ')' : ''}</button>`
         : `<button class="btn btn-dark" type="button" data-action="chat-about" data-name="${esc(a.name)}">Ask about this</button>`}</div>`);
   }
 
@@ -923,16 +1095,23 @@
   /* ================================================================
      ROUTER
      ================================================================ */
-  const VIEWS = { home: viewHome, plan: viewPlan, desks: viewDesks, team: viewTeam };
+  const VIEWS = { home: viewHome, plan: viewPlan, desks: viewDesks, team: viewTeam, setup: viewSetup };
   function route() {
     let [r, sub] = (location.hash || '#home').slice(1).split('/');
     if (['lead', 'social', 'ads'].includes(r)) { sub = r; r = 'desks'; }
     if (r === 'desks') S.desk = ['lead', 'social', 'ads'].includes(sub) ? sub : (S.desk || 'lead');
+    if (r === 'setup' && !S.draft) { S.draft = sub === 'new' ? { offers: {}, connected: {}, tone: 'calm', approver: 'me', dailyCap: 80, quiet: true, alertBy: 'text', budget: 1500 } : JSON.parse(JSON.stringify(S.profile)); S.setupStep = 0; }
     return VIEWS[r] ? r : 'home';
   }
   function render() {
+    if (!signedIn()) {
+      document.body.dataset.route = 'login'; S.lastView = 'login';
+      $('#view').innerHTML = viewLogin();
+      const f = document.querySelector('.login input'); if (f && !AUTH.busy) f.focus();
+      return;
+    }
     const r = route();
-    const key = r + (r === 'desks' ? S.desk : '');
+    const key = r + (r === 'desks' ? S.desk : '') + (r === 'setup' ? S.setupStep : '');
     const fresh = key !== S.lastView; S.lastView = key;
     $('#view').classList.toggle('calm', !fresh);
     document.body.dataset.route = r;
@@ -994,7 +1173,8 @@
     if (id === 'n2') { const r = S.recs.find(x => x.id === 'r1'); if (r) r.state = 'approved'; }
     S.needs = S.needs.filter(x => x.id !== id);
   }
-  window.addEventListener('hashchange', () => { if (!$('#drawer').hidden) closeDrawer(); render(); window.scrollTo(0, 0); });
+  window.addEventListener('hashchange', () => {
+    if (!location.hash.startsWith('#setup')) S.draft = null; if (!$('#drawer').hidden) closeDrawer(); render(); window.scrollTo(0, 0); });
 
   /* ---------------- Events ---------------- */
   document.addEventListener('click', ev => {
@@ -1017,6 +1197,16 @@
       case 'chat-about': closeDrawer(); openChat(`About the ${el.dataset.name}: `); break;
       case 'go': location.hash = el.dataset.href; break;
       case 'teach': teachDrawer(id); break;
+      case 'enter-demo': AUTH.demo = true; try { sessionStorage.setItem('marquee_demo', '1'); } catch (e) { /* ignore */ } location.hash = '#home'; render(); break;
+      case 'auth-mode': AUTH.mode = el.dataset.m; AUTH.msg = ''; render(); break;
+      case 'sign-out': signOut(); break;
+      case 'setup-pick': readSetupFields(); S.draft[el.dataset.name] = el.dataset.val; if (el.dataset.name === 'type') S.draft.offers = {}; render(); break;
+      case 'setup-offer': { readSetupFields(); const o = el.dataset.val; if (o in S.draft.offers) delete S.draft.offers[o]; else S.draft.offers[o] = ''; render(); break; }
+      case 'setup-connect': readSetupFields(); S.draft.connected[el.dataset.val] = !S.draft.connected[el.dataset.val]; render(); if (S.draft.connected[el.dataset.val]) toast('Connected (demo). In the real thing you’d sign in to it.'); break;
+      case 'setup-next': { readSetupFields(); const err = setupValid(); if (err) { toast(err); break; } S.setupStep++; render(); window.scrollTo(0, 0); break; }
+      case 'setup-back': readSetupFields(); S.setupStep = Math.max(0, S.setupStep - 1); render(); window.scrollTo(0, 0); break;
+      case 'setup-done': S.profile = S.draft; S.draft = null; saveProfile(); applyProfile(); location.hash = '#home'; toast(`Welcome, ${D.practice.owner}. Your team is getting started.`); break;
+      case 'setup-demo': S.draft = null; location.hash = '#home'; break;
       case 'teach-save': {
         const t = ($('#teach-title') || {}).value || '', d = ($('#teach-body') || {}).value || '';
         if (!t.trim() || !d.trim()) { toast('Add a short name and what they should do.'); break; }
@@ -1123,6 +1313,7 @@
   document.addEventListener('submit', ev => {
     const f = ev.target.closest('[data-form]'); if (!f) return;
     ev.preventDefault();
+    if (f.dataset.form === 'login') { submitLogin(f); return; }
     const inp = f.querySelector('input'); const q = inp.value; inp.value = '';
     if (f.dataset.form === 'ask' && !q.trim()) { openChat(); return; }
     sendChat(q);
@@ -1192,16 +1383,22 @@
   });
 
   document.addEventListener('input', ev => {
+    if (ev.target.dataset && ev.target.dataset.field === 'budget') { const o = $('#budget-out'); if (o) o.textContent = '£' + n(Number(ev.target.value)); }
+    if (ev.target.dataset && ev.target.dataset.field === 'dailyCap') { const o = $('#cap-out'); if (o) o.textContent = '£' + n(Number(ev.target.value)); }
     if (ev.target.id !== 'skill-q') return;
     S.skillQuery = ev.target.value; render();
     const i = $('#skill-q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
   });
   import('./agents/knowledge.js').then(m => { S.K = m; if (route() === 'team') render(); }).catch(() => { S.K = { KNOWLEDGE: {}, SOURCES: {} }; });
 
+  S.profile = loadProfile() || JSON.parse(JSON.stringify(SEED_PROFILE));
+  applyProfile();
   render();
+  initAuth().then(render);
   checkApi();
   updateBell();
   setTimeout(() => {
+    if (!signedIn()) return;
     let seen = false; try { seen = sessionStorage.getItem('marquee_alert_seen') === '1'; sessionStorage.setItem('marquee_alert_seen', '1'); } catch (e) { /* ignore */ }
     if (!seen && !S.alertShown.u1) showAlert('u1');
   }, 2500);

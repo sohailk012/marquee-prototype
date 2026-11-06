@@ -299,12 +299,15 @@ export function renderKnowledge(agent, budget = KNOWLEDGE_CHAR_BUDGET) {
   return out;
 }
 
-/** Turn an agent and its skills into a plain-text brief for the model. */
-export function renderAgent(agent) {
+/** Turn an agent and its skills into a plain-text brief for the model.
+ *  opts.knowledgeBudget shrinks the know-how for models with a smaller
+ *  context window (methods beyond it become one-line summaries). */
+export function renderAgent(agent, opts = {}) {
   if (!agent) return '';
   const skills = (agent.skills || [])
     .map((s) => `### ${s.name}\n${String(s.instructions || '').trim()}`)
     .join('\n\n');
-  const know = renderKnowledge(agent);
+  const budget = Number.isFinite(opts.knowledgeBudget) ? opts.knowledgeBudget : KNOWLEDGE_CHAR_BUDGET;
+  const know = renderKnowledge(agent, budget);
   return `## ${agent.name}\n${agent.role}\n\n${skills}${know ? `\n\n${know}` : ''}`;
 }

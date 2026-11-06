@@ -1,4 +1,4 @@
-/* POST /api/chat: the Head of Agents chat, backed by Claude.
+/* POST /api/chat: the Head of Agents chat.
  *
  * Flow (kept to at most 1 + N + 1 model calls, N = desks briefed, run in parallel):
  *   1. Head of Agents decides: answer, ask clarifying questions, or delegate.
@@ -6,91 +6,40 @@
  *   3. One Quality & Legal pass reviews the rows (and any drafted copy), rewrites
  *      wording if needed and lists the checks applied.
  *
- * Runs on Cloudflare Pages Functions. No npm dependencies: plain fetch to the
- * Anthropic Messages API. The key comes from env.ANTHROPIC_API_KEY only.
+ * Runs on Cloudflare Pages Functions with no npm dependencies. The model comes from
+ * functions/_lib/providers.js: Cloudflare Workers AI (env.AI binding, free tier) or
+ * Claude (env.ANTHROPIC_API_KEY). Security checks live in functions/_lib/security.js.
  */
 
 import { AGENTS, DESKS, PRODUCT_NAME, getAgent, managerForDesk, renderAgent } from '../../agents/registry.js';
+import { HttpError, corsHeaders, json, options } from '../_lib/http.js';
+import { DEFAULT_MODEL, budgetsFor, callModel, providerInfo, providerName } from '../_lib/providers.js';
+import { checkAccess, checkDeclaredLength, checkRequest, pickContext, rateLimitRequest, rateLimitUser, readBody } from '../_lib/security.js';
 
-export const DEFAULT_MODEL = 'claude-opus-5-5';
-const API_URL = 'https://api.anthropic.com/v1/messages';
-const API_VERSION = '2026-10-21';
-// Server-side refusal fallback: if the model's safety classifiers decline a request,
-// the API re-runs it on Anthropic's recommended fallback model inside the same call.
-// Only sent for models that accept it (set MODEL to anything else and it is left off).
-const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
-const FALLBACK_MODELS = ['claude-opus-5-5', 'claude-opus-5', 'claude-fable-5-1', 'claude-sonnet-5-5'];
+export { DEFAULT_MODEL, corsHeaders, json };
 
 const MAX_MESSAGES = 20;
 const MAX_CHARS = 2000;
 const MAX_BODY_BYTES = 64 * 1024;
-const MAX_CONTEXT_CHARS = 8000;
 const MAX_ROWS_PER_DESK = 4;
-const CALL_TIMEOUT_MS = 28000;
-
-const DEFAULT_ORIGINS = ['https://sohailk012.github.io'];
-
-/* ----------------------------- HTTP helpers ----------------------------- */
-
-export function corsHeaders(request, env = {}) {
-  const origin = request.headers.get('Origin') || '';
-  const extra = String(env.ALLOWED_ORIGINS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const allowed = [...DEFAULT_ORIGINS, ...extra];
-  const isLocal = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-  const h = {
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, x-demo-pass',
-    'Access-Control-Max-Age': '86400',
-    Vary: 'Origin',
-  };
-  if (origin && (allowed.includes(origin) || isLocal)) h['Access-Control-Allow-Origin'] = origin;
-  return h;
-}
-
-export function json(data, status, request, env) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request, env) },
-  });
-}
-
-function safeEqual(a, b) {
-  const x = String(a || '');
-  const y = String(b || '');
-  let diff = x.length ^ y.length;
-  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x.charCodeAt(i) || 0) ^ (y.charCodeAt(i) || 0);
-  return diff === 0;
-}
 
 export async function onRequestOptions({ request, env }) {
-  return new Response(null, { status: 204, headers: corsHeaders(request, env) });
+  return options(request, env || {});
 }
 
 /* ------------------------------ Validation ------------------------------ */
 
-class HttpError extends Error {
-  constructor(status, code, detail) {
-    super(code);
-    this.status = status;
-    this.code = code;
-    this.detail = detail;
-  }
-}
-
 function validateBody(body) {
-  if (!body || typeof body !== 'object') throw new HttpError(400, 'invalid_json');
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'invalid_json');
   const { messages, context } = body;
   if (!Array.isArray(messages) || messages.length === 0) throw new HttpError(400, 'messages_required');
-  if (messages.length > MAX_MESSAGES) throw new HttpError(400, 'too_many_messages', `Max ${MAX_MESSAGES} messages.`);
+  if (messages.length > MAX_MESSAGES) throw new HttpError(400, 'too_many_messages');
   const clean = [];
   for (const m of messages) {
     if (!m || (m.role !== 'user' && m.role !== 'assistant') || typeof m.content !== 'string') {
-      throw new HttpError(400, 'invalid_message', "Each message needs role 'user' or 'assistant' and string content.");
+      throw new HttpError(400, 'invalid_message');
     }
-    if (m.content.length > MAX_CHARS) throw new HttpError(400, 'message_too_long', `Max ${MAX_CHARS} characters per message.`);
+    if (m.content.length > MAX_CHARS) throw new HttpError(400, 'message_too_long');
     const text = m.content.trim();
     if (!text) continue;
     // Merge consecutive same-role turns so the API always sees alternating roles.
@@ -105,84 +54,40 @@ function validateBody(body) {
   if (context !== undefined && (context === null || typeof context !== 'object' || Array.isArray(context))) {
     throw new HttpError(400, 'invalid_context');
   }
-  return { messages: clean, context: context || {} };
+  return { messages: clean, context: pickContext(context || {}) };
+}
+
+/** Keep the most recent turns within a character budget (for small-context models). */
+function trimHistory(messages, maxChars) {
+  if (!Number.isFinite(maxChars)) return messages;
+  const out = [];
+  let used = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (out.length && used + m.content.length > maxChars) break;
+    out.unshift(out.length ? m : { ...m, content: m.content.slice(-maxChars) });
+    used += m.content.length;
+  }
+  while (out.length > 1 && out[0].role !== 'user') out.shift();
+  return out;
 }
 
 function isoDate(d) {
   return d.toISOString().slice(0, 10);
 }
 
-function normaliseContext(context) {
-  const today = /^\d{4}-\d{2}-\d{2}$/.test(String(context.today || '')) ? context.today : isoDate(new Date());
+/** context has already been through pickContext(). */
+function normaliseContext(context, maxChars = 8000) {
+  const today = context.today || isoDate(new Date());
   const upcoming = Array.isArray(context.upcoming) ? context.upcoming.slice(0, 40) : [];
   const ctx = { ...context, today, upcoming };
   let text = JSON.stringify(ctx, null, 1);
-  if (text.length > MAX_CONTEXT_CHARS) {
+  if (text.length > maxChars) {
     ctx.upcoming = upcoming.slice(0, 15);
     text = JSON.stringify(ctx, null, 1);
-    if (text.length > MAX_CONTEXT_CHARS) text = text.slice(0, MAX_CONTEXT_CHARS) + '\n…(truncated)';
+    if (text.length > maxChars) text = text.slice(0, maxChars) + '\n…(truncated)';
   }
   return { today, text };
-}
-
-/* --------------------------- Anthropic client --------------------------- */
-
-async function callClaude(env, { system, messages, schema, maxTokens, effort }) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
-  const model = env.MODEL || DEFAULT_MODEL;
-  const useFallback = FALLBACK_MODELS.includes(model);
-  const headers = {
-    'content-type': 'application/json',
-    'x-api-key': env.ANTHROPIC_API_KEY,
-    'anthropic-version': API_VERSION,
-  };
-  if (useFallback) headers['anthropic-beta'] = FALLBACK_BETA;
-  const payload = {
-    model,
-    max_tokens: maxTokens,
-    thinking: { type: 'adaptive' },
-    output_config: { effort, format: { type: 'json_schema', schema } },
-    system,
-    messages,
-  };
-  if (useFallback) payload.fallbacks = 'default';
-  let res;
-  try {
-    res = await fetch(API_URL, {
-      method: 'POST',
-      signal: controller.signal,
-      headers,
-      body: JSON.stringify(payload),
-    });
-  } catch (err) {
-    throw new HttpError(503, err && err.name === 'AbortError' ? 'upstream_timeout' : 'upstream_unreachable');
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (!res.ok) {
-    let detail = '';
-    try {
-      const e = await res.json();
-      detail = e && e.error && e.error.type ? e.error.type : '';
-    } catch (_) { /* ignore */ }
-    if (res.status === 401 || res.status === 403) throw new HttpError(503, 'not_configured', 'The API key was rejected.');
-    if (res.status === 429 || res.status === 529 || res.status >= 500) throw new HttpError(503, 'upstream_busy', detail);
-    throw new HttpError(500, 'upstream_error', detail || `status ${res.status}`);
-  }
-
-  const data = await res.json();
-  if (data.stop_reason === 'refusal') throw new HttpError(500, 'model_refused');
-  if (data.stop_reason === 'max_tokens') throw new HttpError(500, 'model_output_truncated');
-  // Structured output arrives as JSON in the last text block (thinking/fallback blocks are skipped).
-  const texts = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text);
-  const raw = texts[texts.length - 1];
-  try {
-    return JSON.parse(raw);
-  } catch (_) {
-    throw new HttpError(500, 'model_bad_json');
-  }
 }
 
 /* ------------------------------- Schemas -------------------------------- */
@@ -230,13 +135,13 @@ function system(stable, ctxText) {
 
 const DESK_NAMES = { lead: 'Lead Gen', social: 'Social', ads: 'Paid Ads' };
 
-function headPrompt() {
+function headPrompt(kb) {
   const head = getAgent('head');
   const managers = DESKS.map((d) => managerForDesk(d)).map((m) => `- ${m.desk}: ${m.name}. ${m.role}`).join('\n');
   const quality = getAgent('quality');
   return `${BASE}
 
-${renderAgent(head)}
+${renderAgent(head, { knowledgeBudget: kb })}
 
 ## Desks you can brief
 ${managers}
@@ -253,17 +158,17 @@ Return JSON matching the schema:
 Keep reply under 120 words.`;
 }
 
-function deskPrompt(desk) {
+function deskPrompt(desk, kb) {
   const manager = managerForDesk(desk);
   const copy = getAgent('copy');
   return `${BASE}
 
 You are the ${manager.name} on the ${DESK_NAMES[desk]} desk. The Head of Agents has briefed you. Propose concrete calendar items for your desk only.
 
-${renderAgent(manager)}
+${renderAgent(manager, { knowledgeBudget: kb })}
 
 You can use the Craft Bench Copywriter:
-${renderAgent(copy)}
+${renderAgent(copy, { knowledgeBudget: kb })}
 
 ## Output
 Return JSON with rows (1 to ${MAX_ROWS_PER_DESK} items, fewer is better if fewer is enough):
@@ -273,7 +178,7 @@ Return JSON with rows (1 to ${MAX_ROWS_PER_DESK} items, fewer is better if fewer
 - why: one sentence on why this should work, citing a number from the context where possible.`;
 }
 
-function qualityPrompt(mode) {
+function qualityPrompt(mode, kb) {
   const quality = getAgent('quality');
   const head = getAgent('head');
   const talk = head.skills.find((s) => s.name === 'Talking to the owner');
@@ -281,7 +186,7 @@ function qualityPrompt(mode) {
 
 You are the Quality & Legal gate. Your checks are not legal advice; they catch common problems before the owner sees anything.
 
-${renderAgent(quality)}
+${renderAgent(quality, { knowledgeBudget: kb })}
 
 When you are done, the result goes to the owner from the Head of Agents:
 ${talk ? talk.instructions : ''}`;
@@ -331,16 +236,19 @@ function cleanRows(rows, today, deskOverride) {
 const take = (arr, n) => (Array.isArray(arr) ? arr.map((s) => String(s).trim()).filter(Boolean).slice(0, n) : []);
 
 export async function runChain(env, messages, context) {
-  const { today, text: ctxText } = normaliseContext(context);
+  const B = budgetsFor(env);
+  const kb = B.knowledge;
+  messages = trimHistory(messages, B.historyChars);
+  const { today, text: ctxText } = normaliseContext(context, B.context);
   const name = (id) => (getAgent(id) || {}).name;
   const agents = [name('head')];
 
   // 1. Head of Agents.
-  const head = await callClaude(env, {
-    system: system(headPrompt(), ctxText),
+  const head = await callModel(env, {
+    system: system(headPrompt(kb), ctxText),
     messages,
     schema: HEAD_SCHEMA,
-    maxTokens: 4000,
+    maxTokens: B.headTokens,
     effort: env.HEAD_EFFORT || 'low',
   });
 
@@ -357,17 +265,18 @@ export async function runChain(env, messages, context) {
     const out = { reply: String(head.reply || '').trim(), agents };
     if (head.contains_copy) {
       try {
-        const qc = await callClaude(env, {
-          system: system(qualityPrompt('reply'), ctxText),
+        const qc = await callModel(env, {
+          system: system(qualityPrompt('reply', kb), ctxText),
           messages: [{ role: 'user', content: `<draft_reply>\n${out.reply}\n</draft_reply>` }],
           schema: REPLY_CHECK_SCHEMA,
-          maxTokens: 4000,
+          maxTokens: B.qualityTokens,
           effort: env.QUALITY_EFFORT || 'low',
         });
         if (qc.reply) out.reply = String(qc.reply).trim();
         out.checks = take(qc.checks, 5);
         agents.push(name('quality'));
-      } catch (_) {
+      } catch (err) {
+        console.error('chat: reply check failed', err && (err.detail || err.code || err.message));
         out.reviewed = false;
       }
     }
@@ -378,14 +287,14 @@ export async function runChain(env, messages, context) {
   const lastUser = messages[messages.length - 1].content;
   const deskResults = await Promise.allSettled(
     briefs.map((b) =>
-      callClaude(env, {
-        system: system(deskPrompt(b.desk), ctxText),
+      callModel(env, {
+        system: system(deskPrompt(b.desk, kb), ctxText),
         messages: [{
           role: 'user',
           content: `<owner_request>\n${lastUser}\n</owner_request>\n\n<brief_from_head_of_agents>\n${b.brief}\n</brief_from_head_of_agents>`,
         }],
         schema: DESK_SCHEMA,
-        maxTokens: 6000,
+        maxTokens: B.deskTokens,
         effort: env.DESK_EFFORT || 'medium',
       }).then((r) => ({ desk: b.desk, rows: cleanRows(r.rows, today, b.desk).slice(0, MAX_ROWS_PER_DESK) })),
     ),
@@ -412,14 +321,14 @@ export async function runChain(env, messages, context) {
   // 3. Quality & Legal review of the combined rows.
   let result;
   try {
-    const qc = await callClaude(env, {
-      system: system(qualityPrompt('plan'), ctxText),
+    const qc = await callModel(env, {
+      system: system(qualityPrompt('plan', kb), ctxText),
       messages: [{
         role: 'user',
         content: `<owner_request>\n${lastUser}\n</owner_request>\n\n<proposed_rows>\n${JSON.stringify(proposed, null, 1)}\n</proposed_rows>`,
       }],
       schema: QUALITY_SCHEMA,
-      maxTokens: 6000,
+      maxTokens: B.qualityTokens,
       effort: env.QUALITY_EFFORT || 'low',
     });
     const rows = cleanRows(qc.rows, today).sort((a, b) => a.date.localeCompare(b.date));
@@ -430,7 +339,8 @@ export async function runChain(env, messages, context) {
       agents,
       checks: take(qc.checks, 6),
     };
-  } catch (_) {
+  } catch (err) {
+    console.error('chat: quality review failed', err && (err.detail || err.code || err.message));
     // Review didn't finish: return the desks' rows, clearly flagged as unreviewed.
     result = {
       reply: `${String(head.reply || '').trim()} The Quality & Legal review didn't finish this time, so treat the wording as a draft.`.trim(),
@@ -448,31 +358,38 @@ export async function runChain(env, messages, context) {
 export async function onRequestPost({ request, env }) {
   env = env || {};
   try {
-    if (env.DEMO_PASSCODE && !safeEqual(request.headers.get('x-demo-pass'), env.DEMO_PASSCODE)) {
-      return json({ error: 'unauthorised' }, 401, request, env);
-    }
-    if (!env.ANTHROPIC_API_KEY) return json({ error: 'not_configured' }, 503, request, env);
-
-    const raw = await request.text();
-    if (raw.length > MAX_BODY_BYTES) return json({ error: 'body_too_large' }, 400, request, env);
+    // 1. Cheap request checks: Origin (403), JSON content type (415), declared size (413).
+    checkRequest(request, env);
+    checkDeclaredLength(request, MAX_BODY_BYTES);
+    // 2. Rate limits that don't need a login (KV binding RL, if present): per IP and per day.
+    await rateLimitRequest(request, env);
+    // 3. Who is calling: Supabase login, else passcode, else open only for Workers AI with ALLOW_OPEN=1.
+    const provider = providerName(env);
+    const access = await checkAccess(request, env, provider);
+    if (access.userId) await rateLimitUser(access.userId, env);
+    // 4. Is a model available?
+    if (!providerInfo(env).configured) throw new HttpError(503, 'not_configured', `provider ${provider}`);
+    // 5. Body: real byte length, JSON, allowlisted context.
+    const raw = await readBody(request, MAX_BODY_BYTES);
     let body;
     try {
       body = JSON.parse(raw);
     } catch (_) {
-      return json({ error: 'invalid_json' }, 400, request, env);
+      throw new HttpError(400, 'invalid_json');
     }
     const { messages, context } = validateBody(body);
     const result = await runChain(env, messages, context);
     return json(result, 200, request, env);
   } catch (err) {
     if (err instanceof HttpError) {
-      const payload = { error: err.code };
-      if (err.detail) payload.detail = err.detail;
-      return json(payload, err.status, request, env);
+      if (err.status >= 500 || err.detail) console.error('chat', err.status, err.code, err.detail || '');
+      const extra = err.status === 429 ? { 'Retry-After': '60' } : {};
+      return json({ error: err.code }, err.status, request, env, extra);
     }
+    console.error('chat: unexpected', err && err.stack ? err.stack : err);
     return json({ error: 'server_error' }, 500, request, env);
   }
 }
 
 // Exported for tests and for the health check.
-export const _internal = { validateBody, normaliseContext, cleanRows, AGENTS };
+export const _internal = { validateBody, normaliseContext, cleanRows, trimHistory, pickContext, AGENTS };
