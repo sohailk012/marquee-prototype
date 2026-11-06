@@ -33,6 +33,8 @@
     profile: null,
     draft: null,
     setupStep: 0,
+    campaign: null,
+    memory: [{ text: 'Prefers calm, reassuring wording', when: 'From set-up' }, { text: 'Never compare our prices with other practices', when: '12 Oct' }],
   };
 
   /* ---------------- Helpers ---------------- */
@@ -246,7 +248,8 @@
     const byDay = {}; soon.forEach(e => (byDay[e.date] = byDay[e.date] || []).push(e));
     const weekly = D.weeklyEnquiries.map(w => w.v), reach = D.socialWeekly.map(w => w.reach), cpc = [52, 49, 47, 45, 44, 41, 40, 38];
     const spark = (vals, color) => `<svg class="spark" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true"><path d="${sparkPath(vals, 200, 40)}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-    return `
+    const campBanner = S.campaign ? `<a class="camp-banner rise" href="#campaign"><span class="pulse"></span><span><b>${esc(S.campaign.T.one.charAt(0).toUpperCase() + S.campaign.T.one.slice(1))} campaign</b> ${S.campaign.approved ? 'is being made. Pieces will appear for you to check.' : S.campaign.plan ? 'plan is ready for you.' : S.campaign.stage === 'questions' ? 'needs 4 quick answers.' : 'is being researched and planned.'}</span><span class="link">Open</span></a>` : '';
+    return campBanner + `
     <section class="hero2">
       <div class="rise" style="--i:1">
         <h1>${greeting()}, ${esc(D.practice.owner)} <span class="wave" aria-hidden="true">${ICON.spark}</span></h1>
@@ -523,8 +526,12 @@
     let r = replyFor(q);
     if (r.ask && S.pendingTopic && q.length < 40) r = { generic: q.toLowerCase().replace(/[^a-z ]/g, '').trim() || 'this' };
     S.pendingTopic = false;
-    if (r.plan) pushPlan(PLANS[r.plan]);
-    else if (r.generic) pushPlan(genericPlan(r.generic));
+    if (r.plan || r.generic) {
+      S.chat.push({ from: 'them', html: `Good one. I’ve opened a campaign room so you can watch the team work on it. First, four quick questions.<div style="margin-top:10px"><button class="btn btn-dark btn-sm" type="button" data-action="go" data-href="#campaign">Open the campaign room</button></div>` });
+      S.history.push({ role: 'assistant', content: 'Opened a campaign room for: ' + q });
+      startCampaign(q);
+      setTimeout(() => { if (S.drawerKind === 'chat') closeDrawer(); if (route() !== 'campaign') location.hash = '#campaign'; else render(); }, 1400);
+    }
     else if (r.text) { S.chat.push({ from: 'them', html: r.text }); S.history.push({ role: 'assistant', content: r.text.replace(/<[^>]+>/g, '') }); }
     else {
       S.pendingTopic = true;
@@ -645,6 +652,190 @@
       <div class="drawer-section"><h4>Our suggested reply (it doesn’t mention any treatment, to protect their privacy)</h4>
         <textarea rows="6" style="width:100%;border:1px solid var(--line-3);border-radius:14px;padding:12px;font:inherit;background:rgba(255,255,255,.7)">${esc(D.reviewDraft)}</textarea></div>
       <div class="drawer-actions"><button class="btn btn-dark" type="button" data-action="review-post" data-id="${x.id}">Approve and post</button></div>`);
+  }
+
+  /* ================================================================
+     CAMPAIGN ROOM: brief → questions → research → proposals → debate
+     → plan → changes (accept or push back) → production trail.
+     Blueprint: CAMPAIGN-ENGINE.md. In this demo the stages are simulated
+     with realistic content and timing; the live version runs them as jobs.
+     ================================================================ */
+  const STAGES = [['brief', 'Your brief'], ['questions', 'Questions'], ['research', 'Research'], ['proposals', 'Ideas'], ['debate', 'Challenge'], ['plan', 'Plan'], ['production', 'Making it']];
+  const AG = {
+    lead: ['Your marketing lead', '#1D1D1F'], research: ['Researcher', '#B9831F'], numbers: ['Numbers', '#B9831F'], playbook: ['Industry playbook', '#7A5FA3'],
+    trend: ['Trend watch', '#C8622F'], rules: ['Advertising rules', '#7A5FA3'], np: ['New patients lead', '#0E9184'], ads: ['Ads lead', '#5560C9'],
+    social: ['Social media lead', '#C8622F'], challenger: ['The challenger', '#E5484D'], writer: ['Writer', '#B9831F'], designer: ['Designer', '#B9831F'],
+    cd: ['Creative director', '#1D1D1F'], checks: ['Final checks', '#7A5FA3'],
+  };
+  function topicOf(text) {
+    const t = text.toLowerCase();
+    if (/whiten/.test(t)) return { k: 'whitening', one: 'whitening', many: 'whitening consultations', price: '£295', search: 'teeth whitening near me' };
+    if (/invisalign|aligner|braces|straight/.test(t)) return { k: 'invisalign', one: 'Invisalign', many: 'Invisalign consultations', price: '£2,950', search: 'Invisalign near me' };
+    if (/veneer/.test(t)) return { k: 'veneers', one: 'veneer', many: 'veneer consultations', price: '£650 a tooth', search: 'veneers near me' };
+    return { k: 'implants', one: 'implant', many: 'implant consultations', price: '£2,400', search: 'dental implants near me' };
+  }
+  function startCampaign(brief) {
+    const T = topicOf(brief);
+    S.campaign = { id: Date.now(), brief, T, stage: 'questions', answers: {}, feed: [], findings: [], proposals: [], debate: [], version: 1, changes: [], assets: [], approved: false };
+  }
+  const QUESTIONS = c => [
+    ['goal', `What would success look like? (${c.T.many})`, ['15', '25', '40']],
+    ['budget', 'What can you spend on ads over the campaign?', ['£600', '£1,200', '£2,000']],
+    ['deadline', 'By when?', ['20 December', '31 January', '28 February']],
+    ['capacity', `How many extra ${c.T.many} can you fit in each week?`, ['4', '6', '10 or more']],
+  ];
+  const fmtAg = k => `<span class="ag"><i style="background:${AG[k][1]}">${AG[k][0].split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}</i>${AG[k][0]}</span>`;
+
+  /* timed simulation of research → proposals → debate → plan */
+  function runCampaign() {
+    const c = S.campaign, T = c.T, a = c.answers, budgetNum = Number(String(a.budget).replace(/\D/g, '')), goal = Number(a.goal) || 25;
+    const perConsult = Math.round(budgetNum / goal);
+    const script = [
+      ['research', 'research', 'Looking at private practices within 5 miles of ' + D.practice.town + '…'],
+      ['research', 'numbers', 'Pulling your last 12 months of enquiries from HubSpot…'],
+      ['research', 'playbook', 'Checking what has worked for 30+ similar UK practices…'],
+      ['research', 'trend', 'Scanning this week’s dental posts on Instagram and TikTok…'],
+      ['research', 'research', `Found 7 practices. 4 advertise ${T.one} treatment, 3 show prices (from £1,995 to £2,795 for ${T.k === 'implants' ? 'a single implant' : 'similar treatment'}).`],
+      ['research', 'numbers', `${T.one} enquiries cost £44 each to book through Google ads and £61 through Facebook. Patients recommended by a friend book twice as often.`],
+      ['research', 'research', 'Read 214 recent Google reviews of local practices. Most mentioned: feeling nervous, and wanting clear prices up front.'],
+      ['research', 'numbers', 'Your busiest months are March and October. December drops about 20% after the 15th.'],
+      ['research', 'playbook', 'In similar practices, “free consultation” offers beat discounts, and explaining monthly payments lifts bookings by about a fifth.'],
+      ['research', 'trend', '“What happens at your consultation” videos are getting twice the saves this week.'],
+      ['research', 'rules', 'Checked the idea against the rules: fine. No “Christmas discount” on treatment, and wording about paying monthly must follow the credit advert rules.'],
+      ['proposals', 'np', `Follow up the 38 people who asked about ${T.one} treatment in the last 90 days, then hold a free consultation evening on 3 December.`],
+      ['proposals', 'ads', `Put about 70% of the ${a.budget} into Google ads for “${T.search}” in 4 nearby towns, and 30% into Facebook reminder ads for people who visited your website.`],
+      ['proposals', 'social', `Six posts over four weeks: a consultation walkthrough video, a “what it costs” carousel, a patient story (with consent) and a Q&A with ${D.practice.ownerFull || 'the dentist'}.`],
+      ['debate', 'challenger', 'Facebook clicks are cheaper. Why lead with Google?'],
+      ['debate', 'ads', 'Cheaper clicks, but your own numbers show Facebook costs £61 per booked consultation against £44 on Google. Google leads, Facebook reminds.'],
+      ['debate', 'challenger', 'Is a consultation evening worth it in December?'],
+      ['debate', 'np', 'The last one filled 7 of 12 places. Bookings dip after the 15th, so we hold it on 3 December, before the dip.'],
+      ['debate', 'challenger', 'The patient story needs written consent. Do we have it?'],
+      ['debate', 'social', 'Jo signed a consent form in October that covers social media. If anything changes, we swap in the Q&A video.'],
+      ['debate', 'challenger', `${a.budget} for ${goal} consultations is about £${perConsult} each. Is that realistic?`],
+      ['debate', 'numbers', perConsult >= 44 ? `Yes. Your average is £44, so there’s some room. We’ll still pause if it goes over £80 after 10 days.` : `It’s tight: your average is £44. We’ll lean on the free follow-ups and the evening, and tell you by day 7 if it’s not on track.`],
+      ['debate', 'lead', 'Decided. Google leads, Facebook reminds, evening on 3 December, patient story with a backup. Dropped: a Christmas discount (rules, and it cheapens the brand) and TikTok (little evidence it books this kind of treatment for your age group).'],
+    ];
+    let i = 0;
+    const step = () => {
+      if (!S.campaign || S.campaign.id !== c.id) return;
+      if (i >= script.length) { c.stage = 'plan'; buildPlan(c); renderCampaign(); return; }
+      const [stage, who, text] = script[i++];
+      c.stage = stage;
+      c.feed.push({ stage, who, text });
+      renderCampaign();
+      const el = document.querySelector('.feed-line:last-child'); if (el && route() === 'campaign') el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      setTimeout(step, stage === 'research' ? 1500 : 1900);
+    };
+    setTimeout(step, 600);
+  }
+  function buildPlan(c) {
+    const T = c.T, a = c.answers, goal = Number(a.goal) || 25;
+    c.plan = {
+      target: `${goal} ${T.many} by ${a.deadline}`,
+      budget: a.budget,
+      expect: `${Math.round(goal * 0.75)} to ${Math.round(goal * 1.1)} consultations, at £38 to £55 each`,
+      confidence: 'Medium',
+      confidenceWhy: 'based on your last 12 months and 30+ similar practices. December is harder after the 15th.',
+      steps: [
+        { what: `Follow up the 38 recent ${T.one} enquiries`, why: 'They already know you, so these are the cheapest bookings.', when: 'From 16 Nov', cost: '£0', team: 'lead' },
+        { what: `Google ads for “${T.search}” in 4 towns`, why: 'Your best-value channel: £44 per booked consultation.', when: '18 Nov to ' + a.deadline, cost: 'About 70% of budget', team: 'ads' },
+        { what: 'Facebook reminder ads to website visitors', why: 'People take 3 to 6 weeks to decide, so we stay in front of them.', when: 'From 25 Nov', cost: 'About 30% of budget', team: 'ads' },
+        { what: 'Free consultation evening, 3 December', why: 'The last one filled 7 of 12 places.', when: '3 Dec, 6 to 8pm', cost: '£0', team: 'lead' },
+        { what: 'Six posts over four weeks', why: 'They answer the worries people raise most in local reviews.', when: 'Weekly', cost: '£0', team: 'social' },
+      ],
+      needYou: [['Confirm the evening (3 Dec) and 12 places', 'by Fri 13 Nov'], ['10 photos of the surgery and team', 'by Tue 17 Nov'], [`${D.practice.ownerFull || 'Your dentist'} films 3 short answers (about 20 minutes)`, 'by Fri 20 Nov'], ['Approve posts and ads as they’re ready', 'about 5 minutes a week']],
+      weDo: ['Write, design and edit every post, ad and email', 'Set up and watch the ads every day', 'Text and call-list every new enquiry', 'Run the evening sign-ups and reminders', 'Report every Friday, and check in on day 3, 7 and 14'],
+      checkpoints: ['Day 3: everything running properly?', 'Day 7: early results, small fixes', 'Day 14: keep, change or stop'],
+      stop: 'If a consultation costs more than £80 after 10 days, we pause and rethink with you.',
+      assumptions: [`You can fit ${a.capacity} extra consultations a week`, `Your “from ${T.price}” price stays the same`, 'Jo’s consent form covers social media'],
+    };
+  }
+  function renderCampaign() { if (route() === 'campaign') render(); }
+
+  function viewCampaign() {
+    const c = S.campaign;
+    if (!c) return `<div class="page-head"><span class="eyebrow">Campaign room</span><h1>No campaign yet</h1><p class="lede">Press Ask and tell the team what you want more of.</p></div>`;
+    const idx = STAGES.findIndex(s => s[0] === c.stage);
+    const rail = `<ol class="stage-rail">${STAGES.map(([k, l], n) => `<li class="${n < idx ? 'done' : n === idx ? 'now' : ''}"><i></i><span>${l}</span></li>`).join('')}</ol>`;
+    const feedFor = st => c.feed.filter(f => f.stage === st).map(f => `<div class="feed-line ${f.who === 'challenger' ? 'challenge' : ''}">${fmtAg(f.who)}<p>${esc(f.text)}</p></div>`).join('');
+    const working = st => c.stage === st ? `<div class="feed-line working"><span class="typing"><i></i><i></i><i></i></span><p class="muted">Working…</p></div>` : '';
+    let html = `<div class="page-head"><span class="eyebrow">Campaign room · plan v${c.version}</span><h1>${esc(c.T.one.charAt(0).toUpperCase() + c.T.one.slice(1))} campaign</h1>
+      <p class="lede">You asked: “${esc(c.brief)}”</p></div>${rail}
+      <p class="demo-note">Demo: this plays out in about a minute. The real team takes 5 to 15 minutes and uses your live data. We’ll notify you when it’s ready.</p>`;
+    // questions
+    const Q = QUESTIONS(c), answered = Q.every(q => c.answers[q[0]]);
+    html += `<section class="room-card"><h3>${fmtAg('lead')} A few questions first</h3>
+      ${Q.map(([k, q, opts]) => `<div class="q"><p>${esc(q)}</p><div class="opts">${opts.map(o => `<button type="button" class="opt ${c.answers[k] === o ? 'on' : ''}" data-action="camp-answer" data-k="${k}" data-v="${esc(o)}" ${c.stage !== 'questions' ? 'disabled' : ''}>${esc(o)}</button>`).join('')}</div></div>`).join('')}
+      ${c.stage === 'questions' ? `<button class="btn btn-dark btn-big" type="button" data-action="camp-go" ${answered ? '' : 'disabled'}>Start the research</button>` : ''}</section>`;
+    if (idx >= 2) html += `<section class="room-card"><h3>Research</h3><p class="small muted">Four team members look into your market, your own numbers, what works for practices like yours, and the rules.</p><div class="feed">${feedFor('research')}${working('research')}</div></section>`;
+    if (idx >= 3) html += `<section class="room-card"><h3>Ideas from each team</h3><div class="feed">${feedFor('proposals')}${working('proposals')}</div></section>`;
+    if (idx >= 4) html += `<section class="room-card"><h3>The challenge</h3><p class="small muted">Before anything reaches you, a challenger questions every idea. Here’s what they argued about.</p><div class="feed">${feedFor('debate')}${working('debate')}</div></section>`;
+    if (c.plan) html += planSection(c);
+    if (c.stage === 'production' || c.approved) html += productionSection(c);
+    return html;
+  }
+  function planSection(c) {
+    const p = c.plan;
+    return `<section class="room-card plan-final" id="final-plan"><div class="row between wrap"><h3>${fmtAg('lead')} The plan${c.version > 1 ? ` (version ${c.version})` : ''}</h3><span class="small muted">${c.approved ? 'Approved' : 'Waiting for you'}</span></div>
+      <div class="plan-head">
+        <div><span class="stat-label">Target</span><b>${esc(p.target)}</b></div>
+        <div><span class="stat-label">Ad budget</span><b>${esc(p.budget)}</b></div>
+        <div><span class="stat-label">What we expect</span><b>${esc(p.expect)}</b><span class="tiny muted">Confidence: ${esc(p.confidence)}, ${esc(p.confidenceWhy)}</span></div>
+      </div>
+      <div class="plan-steps">${p.steps.map((s, n) => `<div class="pstep"><span class="pnum">${n + 1}</span><div><b>${esc(s.what)}</b><p>${esc(s.why)}</p><span class="tiny muted">${esc(s.when)} · ${esc(s.cost)}</span></div>${deskTag(s.team)}</div>`).join('')}</div>
+      <div class="split">
+        <div class="split-col you"><h4>What we need from you</h4><ul>${p.needYou.map(([t, d]) => `<li><span>${esc(t)}</span><b>${esc(d)}</b></li>`).join('')}</ul></div>
+        <div class="split-col us"><h4>What we’ll do</h4><ul>${p.weDo.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>
+      </div>
+      <div class="split">
+        <div class="split-col"><h4>Check-ins</h4><ul>${p.checkpoints.map(t => `<li>${esc(t)}</li>`).join('')}</ul><p class="small" style="margin-top:8px"><b>Stop rule:</b> ${esc(p.stop)}</p></div>
+        <div class="split-col"><h4>Please confirm we’ve got these right</h4><ul>${p.assumptions.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>
+      </div>
+      ${c.changes.map(ch => `<div class="change"><div class="msg msg-me">${esc(ch.ask)}</div><div class="change-reply ${ch.kind}">${fmtAg(ch.kind === 'refuse' ? 'rules' : 'lead')}<p>${ch.reply}</p>${ch.choices && !ch.chosen ? `<div class="opts">${ch.choices.map((o, n) => `<button type="button" class="opt" data-action="camp-choose" data-i="${c.changes.indexOf(ch)}" data-n="${n}">${esc(o)}</button>`).join('')}</div>` : ch.chosen ? `<p class="tiny muted">You chose: ${esc(ch.chosen)}</p>` : ''}</div></div>`).join('')}
+      ${c.approved ? '' : `<div class="change-box"><label class="field"><span>Want anything changed?</span><textarea id="camp-change" rows="2" placeholder="e.g. Put more into Facebook, or move the evening to 10 December"></textarea></label>
+        <div class="row wrap" style="margin-top:10px"><button class="btn btn-dark btn-big" type="button" data-action="camp-approve">Approve the plan</button><button class="btn btn-line btn-big" type="button" data-action="camp-change">Send the change</button></div></div>`}
+    </section>`;
+  }
+  /* change handling: accept preferences, push back on evidence, refuse rule breaks */
+  function handleChange(c, text) {
+    const t = text.toLowerCase(); let ch;
+    if (/botox|guarantee|pain.?free|painless|best in|cheapest|discount/.test(t)) {
+      ch = { ask: text, kind: 'refuse', reply: 'We can’t do that one. It breaks the UK advertising rules for dental care (no promised results, no “painless”-type claims, no price pressure on treatment). Here’s what we can say instead: “Gentle, unhurried appointments, with a free consultation and clear prices.” Sam has been told, in case you want to talk it through.' };
+    } else if (/facebook|instagram|meta|cut google|less google|no google|tiktok/.test(t)) {
+      ch = { ask: text, kind: 'push', reply: 'We hear you. One thing first: <b>your own numbers show Facebook costs £61 per booked consultation, against £44 on Google.</b> Moving the money would likely mean fewer consultations for the same spend. How would you like to go?', choices: ['Go with the plan', 'Do it my way', 'Test both for a week'] };
+    } else {
+      ch = { ask: text, kind: 'accept', reply: 'Done. That fits what the research says, so we’ve updated the plan and told every team. We’ll remember this for next time.' };
+      c.version++; S.memory.unshift({ text: text, when: 'Just now' });
+      if (/evening|date|10 dec|december/.test(t)) c.plan.steps[3].when = 'New date, as you asked';
+      c.plan.steps.forEach(s => { if (/photo/.test(t) && /post/i.test(s.what)) s.why += ' Using your photos where we can.'; });
+    }
+    c.changes.push(ch);
+  }
+
+  /* production line with visible layers */
+  const ASSET_SCRIPT = T => [
+    { title: 'Consultation walkthrough (Reel)', kind: 'reel', trail: [['writer', 'Wrote the script: 6 shots, 28 seconds.'], ['designer', 'Cut together your clips and added captions in your colours.'], ['cd', '6/10. The first 3 seconds are slow. Open with the question people ask most.'], ['writer', 'v2: opens with “Will it hurt?” then answers it.'], ['cd', '9/10. Clear, calm and on brand.'], ['checks', 'Spelling fine. Removed “pain-free” (can’t be promised). Consent on file for anyone shown.']] },
+    { title: `What ${T.one} treatment costs, explained (carousel)`, kind: 'carousel', trail: [['writer', 'Five slides: what’s included, from-price, paying monthly, how to book.'], ['designer', 'Made the slides from your template.'], ['cd', '8/10. Make the price slide easier to read.'], ['designer', 'Bigger price, fewer words.'], ['checks', 'Monthly payment wording fixed to follow the credit advert rules. Ready.']] },
+    { title: `Google ad: ${T.one} near ${D.practice.town}`, kind: 'ad', trail: [['writer', 'Six headlines and four descriptions.'], ['cd', 'Dropped 2 weak headlines. Kept the clearest four.'], ['checks', 'Within Google’s limits and the advertising rules. Ready.']] },
+    { title: `Follow-up email to recent ${T.one} enquiries`, kind: 'message', trail: [['writer', 'Short, friendly, one clear next step: book a free consultation.'], ['cd', '9/10.'], ['checks', 'Only goes to people who agreed to emails. Unsubscribe link included. Ready.']] },
+  ];
+  function productionSection(c) {
+    return `<section class="room-card"><h3>Making it</h3><p class="small muted">Each piece goes through every layer before it reaches you. Tap one to see what changed along the way.</p>
+      <div class="line-key">${['writer', 'designer', 'cd', 'checks'].map(k => fmtAg(k)).join('<span class="arrow">→</span>')}<span class="arrow">→</span><span class="ag"><i style="background:#30A46C">Y</i>You</span></div>
+      <div class="assets">${c.assets.map((a, n) => { const done = a.step >= a.trail.length; return `<details class="asset ${done ? 'ready' : ''}" ${n === 0 ? 'open' : ''}><summary><span class="t-kind">${ICON[a.kind]}${KIND_LABEL[a.kind]}</span><b>${esc(a.title)}</b>
+        <span class="status">${done ? (a.approved ? '<i class="dot dot-always"></i>Approved' : '<i class="dot dot-needs"></i>Ready for you') : `<i class="dot dot-working"></i>${AG[a.trail[a.step][0]][0]} working…`}</span></summary>
+        <ol class="trail">${a.trail.slice(0, a.step).map(([who, note]) => `<li>${fmtAg(who)}<p>${esc(note)}</p></li>`).join('')}</ol>
+        ${done && !a.approved ? `<div class="row wrap"><button class="btn btn-dark btn-sm" type="button" data-action="asset-ok" data-n="${n}">Approve</button><button class="btn btn-line btn-sm" type="button" data-action="asset-change" data-n="${n}">Ask for a change</button></div>` : ''}</details>`; }).join('')}</div></section>`;
+  }
+  function runProductionOne(a) { const t = () => { if (a.step < a.trail.length) { a.step++; renderCampaign(); setTimeout(t, 1000); } }; setTimeout(t, 600); }
+  function runProduction(c) {
+    c.assets = ASSET_SCRIPT(c.T).map(a => Object.assign({ step: 0, approved: false }, a));
+    const tick = () => {
+      if (!S.campaign || S.campaign.id !== c.id) return;
+      const next = c.assets.find(a => a.step < a.trail.length); if (!next) { toast('Everything is ready for you to check.'); return; }
+      next.step++; renderCampaign(); setTimeout(tick, 1100);
+    };
+    setTimeout(tick, 800);
   }
 
   /* ================================================================
@@ -843,6 +1034,9 @@
       </div>
       <div class="later"><span>Teams you can add later:</span>${T.later.map(l => `<span class="slot">${esc(l)}</span>`).join('')}</div>
     </section>
+
+    <section class="section"><div class="section-head"><h2>What we’ve learned about you</h2><p>Every change you ask for is remembered, and every team member reads this.</p></div>
+      <div class="memory">${S.memory.map(m => `<div class="mem"><b>${esc(m.text)}</b><span class="tiny muted">${esc(m.when)}</span></div>`).join('')}</div></section>
 
     ${trainingSection()}
 
@@ -1095,7 +1289,7 @@
   /* ================================================================
      ROUTER
      ================================================================ */
-  const VIEWS = { home: viewHome, plan: viewPlan, desks: viewDesks, team: viewTeam, setup: viewSetup };
+  const VIEWS = { home: viewHome, plan: viewPlan, desks: viewDesks, team: viewTeam, setup: viewSetup, campaign: viewCampaign };
   function route() {
     let [r, sub] = (location.hash || '#home').slice(1).split('/');
     if (['lead', 'social', 'ads'].includes(r)) { sub = r; r = 'desks'; }
@@ -1195,8 +1389,36 @@
       case 'add-on-day': openChat(`For ${fmtShort(el.dataset.date)}: `); break;
       case 'ask': sendChat(el.dataset.q); break;
       case 'chat-about': closeDrawer(); openChat(`About the ${el.dataset.name}: `); break;
-      case 'go': location.hash = el.dataset.href; break;
+      case 'go': if (!$('#drawer').hidden) closeDrawer(); location.hash = el.dataset.href; break;
       case 'teach': teachDrawer(id); break;
+      case 'camp-answer': if (S.campaign && S.campaign.stage === 'questions') { S.campaign.answers[el.dataset.k] = el.dataset.v; render(); } break;
+      case 'camp-go': if (S.campaign) { S.campaign.stage = 'research'; render(); runCampaign(); } break;
+      case 'camp-change': {
+        const c = S.campaign, t = ($('#camp-change') || {}).value || '';
+        if (!c || !t.trim()) { toast('Type what you’d like changed first.'); break; }
+        handleChange(c, t.trim()); render();
+        setTimeout(() => { const x = document.querySelector('.change:last-of-type'); x && x.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 50);
+        break;
+      }
+      case 'camp-choose': {
+        const c = S.campaign, ch = c && c.changes[Number(el.dataset.i)], choice = ch && ch.choices[Number(el.dataset.n)];
+        if (!ch) break; ch.chosen = choice;
+        if (choice === 'Do it my way') { c.version++; c.plan.steps[1].cost = 'About 30% of budget'; c.plan.steps[2].cost = 'About 70% of budget'; c.plan.steps[2].why = 'Your call. We’ll report the cost per consultation weekly so you can compare.'; S.memory.unshift({ text: 'Likes Facebook to lead the ad budget', when: 'Just now' }); }
+        if (choice === 'Test both for a week') { c.version++; c.plan.steps.splice(3, 0, { what: 'One-week test: half Google, half Facebook', why: 'Let the results decide. We switch to the winner on day 8.', when: 'First week', cost: 'Same budget', team: 'ads' }); }
+        render(); toast(choice === 'Go with the plan' ? 'Keeping the plan as it is.' : 'Plan updated. Every team has been told.');
+        break;
+      }
+      case 'camp-approve': {
+        const c = S.campaign; if (!c) break;
+        c.approved = true; c.stage = 'production';
+        const dates = ['2026-11-16', '2026-11-18', '2026-11-25', '2026-12-03', '2026-11-20'];
+        c.plan.steps.slice(0, 5).forEach((st, n) => S.calendar.push({ id: `cmp${c.id}-${n}`, date: dates[n] || '2026-11-27', desk: st.team, title: st.what, status: 'drafting', detail: `${st.what}. Why: ${st.why}`, isNew: true }));
+        burst(el); toast('Approved. It’s on your Plan, and the team has started making it.');
+        render(); runProduction(c);
+        break;
+      }
+      case 'asset-ok': { const a = S.campaign && S.campaign.assets[Number(el.dataset.n)]; if (a) { a.approved = true; render(); toast('Approved. It’s scheduled.'); } break; }
+      case 'asset-change': { const a = S.campaign && S.campaign.assets[Number(el.dataset.n)]; if (a) { a.trail.push(['writer', 'Your change request received. Reworking it now.'], ['cd', 'Checked the new version against your note.'], ['checks', 'Checked again. Ready.']); render(); runProductionOne(a); } break; }
       case 'enter-demo': AUTH.demo = true; try { sessionStorage.setItem('marquee_demo', '1'); } catch (e) { /* ignore */ } location.hash = '#home'; render(); break;
       case 'auth-mode': AUTH.mode = el.dataset.m; AUTH.msg = ''; render(); break;
       case 'sign-out': signOut(); break;
