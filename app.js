@@ -1,0 +1,787 @@
+/* Backroom prototype: plain JavaScript, no build step.
+   Views are functions that return HTML strings. Clicks are handled in one
+   place through data-action attributes. All data is mock (see data.js). */
+(function () {
+  'use strict';
+  const D = window.DATA;
+
+  /* ---------------- State ---------------- */
+  const S = {
+    month: '2026-11',
+    filters: { lead: true, social: true, ads: true },
+    needs: D.needsYou.slice(),
+    calendar: D.calendar.map(e => Object.assign({}, e)),
+    chat: [],
+    chatBusy: false,
+    leadTab: 'overview',
+    journeyStep: 0,
+    attrModel: 'W-shaped',
+    recs: D.recommendations.map(r => Object.assign({}, r)),
+    adsPaused: false,
+    called: {},
+    lastFocus: null,
+  };
+
+  /* ---------------- Helpers ---------------- */
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const DAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const MON_S = MONTHS.map(m => m.slice(0, 3));
+  const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const TODAY = parse(D.today);
+  const fmtShort = s => { const d = parse(s); return `${DAYS[d.getDay()]} ${d.getDate()} ${MON_S[d.getMonth()]}`; };
+  const deskName = k => (D.desks[k] || {}).name || k;
+  const deskTag = k => `<span class="desk-tag"><i class="sw sw-${k}"></i>${esc(deskName(k))}</span>`;
+  const n = v => v.toLocaleString('en-GB');
+
+  const STATUS = {
+    done: { label: 'Done', dot: 'idle' },
+    live: { label: 'Live', dot: 'always' },
+    scheduled: { label: 'Scheduled', dot: 'always' },
+    drafting: { label: 'Team working on it', dot: 'working' },
+    needs: { label: 'Needs you', dot: 'needs' },
+    blocked: { label: 'Waiting on you', dot: 'needs' },
+    idea: { label: 'Idea', dot: 'idle' },
+  };
+  const AGENT_STATE = { working: 'Working', needs: 'Needs you', always: 'Always on', idle: 'Available' };
+  const statusEl = st => { const s = STATUS[st] || STATUS.idea; return `<span class="status"><i class="dot dot-${s.dot}"></i>${s.label}</span>`; };
+  const agentState = st => `<span class="status"><i class="dot dot-${st}"></i>${AGENT_STATE[st]}</span>`;
+
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg; t.hidden = false;
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => { t.hidden = true; }, 3200);
+  }
+
+  /* ---------------- Drawer ---------------- */
+  function openDrawer(html, opts) {
+    S.lastFocus = document.activeElement;
+    $('#drawer-body').innerHTML = html;
+    $('#drawer').hidden = false; $('#scrim').hidden = false;
+    document.body.style.overflow = 'hidden';
+    const focusEl = (opts && opts.focus && $(opts.focus)) || $('.drawer-close');
+    setTimeout(() => focusEl && focusEl.focus(), 30);
+  }
+  function closeDrawer() {
+    $('#drawer').hidden = true; $('#scrim').hidden = true;
+    document.body.style.overflow = '';
+    S.drawerKind = null;
+    if (S.lastFocus && document.contains(S.lastFocus)) S.lastFocus.focus();
+  }
+
+  /* ---------------- Charts ---------------- */
+  function barChart(o) {
+    const data = o.data, W = 600, H = o.height || 190, pl = 30, pr = 6, pt = 22, pb = 26;
+    const max = Math.max(...data.map(d => d.v));
+    const step = max > 40 ? 20 : max > 16 ? 5 : max > 8 ? 2 : 1;
+    const top = Math.ceil(max / step) * step;
+    const iw = W - pl - pr, ih = H - pt - pb, bw = iw / data.length;
+    const gap = Math.max(2, bw * 0.28), barW = bw - gap, base = pt + ih, r = 4;
+    let g = '';
+    for (let t = 0; t <= top; t += step * (top / step > 4 ? 2 : 1)) {
+      const y = base - (t / top) * ih;
+      g += `<line class="gridline" x1="${pl}" x2="${W - pr}" y1="${y}" y2="${y}"/><text class="axis-label" x="${pl - 8}" y="${y + 4}" text-anchor="end">${t}</text>`;
+    }
+    data.forEach((d, i) => {
+      const h = Math.max(1, (d.v / top) * ih), x = pl + i * bw + gap / 2, y = base - h, rr = Math.min(r, h);
+      const path = `M${x},${base} V${y + rr} Q${x},${y} ${x + rr},${y} H${x + barW - rr} Q${x + barW},${y} ${x + barW},${y + rr} V${base} Z`;
+      const last = i === data.length - 1;
+      g += `<path class="bar" d="${path}" fill="${o.color}" opacity="${last ? 1 : 0.78}"/>`;
+      if (last) g += `<text class="val-label" x="${x + barW / 2}" y="${y - 7}" text-anchor="middle">${esc(o.fmt ? o.fmt(d.v) : d.v)}</text>`;
+      if (data.length <= 10 || i % 2 === 0) g += `<text class="axis-label" x="${x + barW / 2}" y="${H - 6}" text-anchor="middle">${esc(d.label)}</text>`;
+      g += `<rect class="hit" x="${pl + i * bw}" y="${pt}" width="${bw}" height="${ih}" data-tip="<b>${esc(o.fmt ? o.fmt(d.v) : d.v)}</b> ${esc(o.unit || '')} · ${esc(o.tipPrefix || '')}${esc(d.label)}"/>`;
+    });
+    const rows = data.map(d => `<tr><td>${esc(d.label)}</td><td class="num">${esc(o.fmt ? o.fmt(d.v) : d.v)}</td></tr>`).join('');
+    const id = 'tbl-' + Math.random().toString(36).slice(2, 8);
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(o.aria)}">${g}</svg><div class="tip"></div></div>
+      <button class="link tiny table-toggle" type="button" data-action="toggle-table" data-target="${id}" aria-expanded="false">Show as table</button>
+      <table class="data-table" id="${id}" hidden><thead><tr><th>${esc(o.labelHead || 'Week of')}</th><th class="num">${esc(o.valueHead || 'Value')}</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  function hbars(items, opts) {
+    const max = Math.max(...items.map(i => i.v)) || 1;
+    return `<div class="hbars">${items.map(i => `
+      <div class="hbar"><div class="hbar-name"><span>${esc(i.name)}</span>${i.note ? `<span class="muted">${esc(i.note)}</span>` : ''}</div>
+      <div class="hbar-track"><span style="width:${(i.v / max) * 100}%;${opts && opts.color ? `background:${opts.color}` : ''}"></span></div>
+      <div class="hbar-v">${esc(opts && opts.fmt ? opts.fmt(i.v) : i.v)}</div></div>`).join('')}</div>`;
+  }
+
+  /* ================================================================
+     HOME
+     ================================================================ */
+  function greeting() {
+    const h = new Date().getHours();
+    return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  }
+
+  function viewHome() {
+    const g = D.goal;
+    const pct = Math.round((g.done / g.target) * 100);
+    const pacePct = (g.expectedByToday / g.target) * 100;
+    const ahead = g.done - g.expectedByToday;
+    const needCount = S.needs.length;
+    const upcoming = S.calendar.filter(e => parse(e.date) > TODAY && e.status !== 'done')
+      .sort((a, b) => a.date.localeCompare(b.date)).slice(0, 6);
+
+    const deskSummary = k => {
+      const needs = S.needs.filter(x => x.desk === k).length;
+      const working = S.calendar.filter(e => e.desk === k && e.status === 'drafting').length;
+      const txt = { lead: '12 consultations booked. 4 call-backs late.', social: 'Reach up 20% this week. Best: the myths Reel.', ads: '£472 of £2,400 spent. On pace.' }[k];
+      return `<a class="goal-desk" href="#${k}"><b><i class="sw sw-${k}"></i>${deskName(k)}</b><span>${txt}</span>
+        <span class="status">${needs ? `<i class="dot dot-needs"></i>${needs} need${needs > 1 ? '' : 's'} you` : `<i class="dot dot-working"></i>${working} in progress`}</span></a>`;
+    };
+
+    return `
+    <section class="hello">
+      <div>
+        <span class="eyebrow">${DAYS_LONG[TODAY.getDay()]} ${TODAY.getDate()} ${MONTHS[TODAY.getMonth()]}</span>
+        <h1>${greeting()}, ${esc(D.practice.owner)}.</h1>
+        <p class="brief">This week brought <b>51 new enquiries</b>, your best week since we started, and <b>12 consultations</b> are booked so far in November.
+        ${needCount ? `<b>${needCount} thing${needCount > 1 ? 's' : ''}</b> need${needCount > 1 ? '' : 's'} you before the weekend.` : 'Nothing needs you right now.'}</p>
+      </div>
+      <div class="ask-wrap">
+        <div class="ask-label"><span class="avatar">H</span><span class="who"><b>Head of Agents</b><span>Tell me what you need. I’ll brief the team.</span></span></div>
+        <form class="ask" data-form="ask">
+          <label for="ask-input" class="sr" style="position:absolute;left:-9999px">Ask your team</label>
+          <input id="ask-input" name="q" type="text" autocomplete="off" placeholder="e.g. Get more implant patients in December">
+          <button class="btn btn-dark" type="submit">Ask</button>
+        </form>
+        <div class="suggest">
+          <button type="button" data-action="ask" data-q="Plan a new year smile campaign">New year campaign</button>
+          <button type="button" data-action="ask" data-q="We need more implant patients">More implant patients</button>
+          <button type="button" data-action="ask" data-q="How is the ad budget doing?">How’s the budget?</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="goal" aria-label="November goal">
+      <div>
+        <div class="goal-top"><h2>${esc(g.title)}: ${esc(g.text)}</h2></div>
+        <div class="goal-bar" role="img" aria-label="${g.done} of ${g.target} booked; pace mark at ${g.expectedByToday}">
+          <span style="width:${pct}%"></span><i style="left:${pacePct}%"></i>
+        </div>
+        <div class="goal-legend"><span><b style="color:var(--ink)">${g.done} booked</b> of ${g.target}</span><span>${ahead > 0 ? `${ahead} ahead of pace` : 'On pace'} · line shows where we should be today</span></div>
+      </div>
+      <div class="goal-desks">${['lead', 'social', 'ads'].map(deskSummary).join('')}</div>
+    </section>
+
+    <section class="section" aria-label="Last 30 days">
+      <div class="section-head"><h2>How it’s going</h2><p>Last 30 days, in money and patients, not likes.</p></div>
+      <div class="stats">${D.stats.map(s => `
+        <div class="stat"><span class="stat-label">${esc(s.label)}</span><span class="stat-value">${esc(s.value)}</span>
+        <span class="stat-foot"><b>${esc(s.delta)}</b> ${esc(s.note)}</span></div>`).join('')}
+      </div>
+    </section>
+
+    <section class="section home-main">
+      <div>${calendarBlock()}</div>
+      <aside class="rail">
+        <div>
+          <h3>Needs you <span class="count">${needCount}</span></h3>
+          <div class="needs">${needCount ? S.needs.map(needItem).join('') : '<p class="empty">All clear. The team will shout when something needs you.</p>'}</div>
+        </div>
+        <div>
+          <h3>Happening now</h3>
+          <div class="now">${D.happeningNow.map(h => `<div class="now-item"><i class="pulse"></i><div>${esc(h.what)}<small>${esc(h.who)} desk</small></div></div>`).join('')}</div>
+        </div>
+        <div>
+          <h3>Coming up</h3>
+          <div class="next">${upcoming.map(e => {
+            const d = parse(e.date);
+            return `<button class="next-item" type="button" data-action="open-event" data-id="${e.id}"><span class="next-date"><b>${d.getDate()}</b>${DAYS[d.getDay()]}</span>
+              <span><span class="next-title">${esc(e.title)}</span><br>${deskTag(e.desk)}</span></button>`;
+          }).join('')}</div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section charts">
+      <div>
+        <div class="chart-title">New enquiries each week</div>
+        <div class="chart-sub">Up from about 30 a week in September. Every channel together.</div>
+        ${barChart({ data: D.weeklyEnquiries.map(w => ({ label: w.wk, v: w.v })), color: '#1B1B1A', unit: 'enquiries', tipPrefix: 'week of ', aria: 'Bar chart of weekly enquiries, rising from 31 to 51 over 8 weeks', valueHead: 'Enquiries' })}
+      </div>
+      <div>
+        <div class="chart-title">Where they came from</div>
+        <div class="chart-sub">186 enquiries in the last 30 days.</div>
+        ${hbars(D.sources.map(s => ({ name: s.name, v: s.v })))}
+        <p class="small muted" style="margin-top:14px">Social rarely gets the last click but often starts the journey. <a href="#lead" data-action="goto-attr" class="link">See how we credit it</a></p>
+      </div>
+    </section>`;
+  }
+
+  function needItem(nd) {
+    const btns = {
+      approve: `<button class="btn btn-dark btn-sm" type="button" data-action="need-approve" data-id="${nd.id}">Approve</button>
+                <button class="btn btn-line btn-sm" type="button" data-action="need-review" data-id="${nd.id}">Review</button>`,
+      task: `<button class="btn btn-dark btn-sm" type="button" data-action="need-calls" data-id="${nd.id}">See who to call</button>`,
+      upload: `<button class="btn btn-dark btn-sm" type="button" data-action="need-upload" data-id="${nd.id}">Upload photos</button>`,
+    }[nd.kind];
+    return `<div class="need" data-need="${nd.id}">${deskTag(nd.desk)}<span class="need-title">${esc(nd.title)}</span>
+      <span class="need-why">${esc(nd.why)}</span><div class="need-actions">${btns}</div></div>`;
+  }
+
+  /* ---------------- Calendar ---------------- */
+  function calendarBlock() {
+    const [y, m] = S.month.split('-').map(Number);
+    const first = new Date(y, m - 1, 1);
+    const start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7)); // Monday start
+    const last = new Date(y, m, 0);
+    const end = new Date(last); end.setDate(last.getDate() + (7 - ((last.getDay() + 6) % 7) - 1));
+    const visible = e => S.filters[e.desk];
+    let cells = '', agenda = '';
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const key = iso(d), out = d.getMonth() !== m - 1;
+      const evs = S.calendar.filter(e => e.date === key && visible(e));
+      const cls = ['cal-day', out ? 'out' : '', key === D.today ? 'today' : '', d < TODAY ? 'past' : ''].join(' ');
+      cells += `<div class="${cls}"><div class="cal-num"><span>${d.getDate()}</span>${!out && d >= TODAY ? `<button class="cal-add" type="button" data-action="add-on-day" data-date="${key}" aria-label="Ask the team for something on ${fmtShort(key)}">+</button>` : ''}</div>
+        ${evs.map(evChip).join('')}</div>`;
+      if (!out && evs.length) agenda += `<div class="agenda-day"><span class="next-date"><b>${d.getDate()}</b>${DAYS[d.getDay()]}</span><div class="evs">${evs.map(evChip).join('')}</div></div>`;
+    }
+    const canPrev = S.month > '2026-11', canNext = S.month < '2026-12';
+    return `
+      <div class="cal-head">
+        <div class="row"><h2>${MONTHS[m - 1]} ${y}</h2>
+          <button class="btn btn-ghost btn-sm" type="button" data-action="month" data-dir="-1" ${canPrev ? '' : 'disabled style="opacity:.3"'} aria-label="Previous month">‹</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-action="month" data-dir="1" ${canNext ? '' : 'disabled style="opacity:.3"'} aria-label="Next month">›</button>
+        </div>
+        <div class="filters" role="group" aria-label="Show desks">${['lead', 'social', 'ads'].map(k =>
+          `<button class="filter" type="button" data-action="filter" data-desk="${k}" aria-pressed="${S.filters[k]}"><i class="sw sw-${k}"></i>${deskName(k)}</button>`).join('')}</div>
+      </div>
+      <div class="cal" id="calendar"><div class="cal-dow">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(x => `<span>${x}</span>`).join('')}</div>
+        <div class="cal-grid">${cells}</div></div>
+      <div class="agenda">${agenda || '<p class="empty">Nothing planned yet. Ask the Head of Agents for a plan.</p>'}</div>
+      <div class="cal-key"><span><i class="dot dot-needs"></i>Needs you</span><span><i class="dot dot-working"></i>Team working on it</span><span><i class="dot dot-always"></i>Scheduled or live</span><span><i class="dot dot-idle"></i>Done or idea</span><span>Hover a day and press + to ask for something</span></div>`;
+  }
+  function evChip(e) {
+    const st = STATUS[e.status] || STATUS.idea;
+    const cls = ['ev', 'ev-' + e.desk, e.status === 'done' ? 'is-done' : '', e.status === 'idea' ? 'is-idea' : '', e.isNew ? 'is-new' : ''].join(' ');
+    return `<button class="${cls}" type="button" data-action="open-event" data-id="${e.id}" title="${esc(e.title)} · ${st.label}"><i class="dot dot-${st.dot}"></i><span class="ev-text">${esc(e.title)}</span></button>`;
+  }
+
+  function eventDrawer(id) {
+    const e = S.calendar.find(x => x.id === id); if (!e) return;
+    let extra = '';
+    if (id === 'c6') extra = carouselPreview();
+    let actions = '';
+    if (e.status === 'needs') actions = `<button class="btn btn-dark" type="button" data-action="event-approve" data-id="${id}">Approve</button><button class="btn btn-line" type="button" data-action="event-changes" data-id="${id}">Ask for changes</button>`;
+    else if (e.status === 'idea') actions = `<button class="btn btn-dark" type="button" data-action="event-go" data-id="${id}">Go ahead</button><button class="btn btn-line" type="button" data-action="event-drop" data-id="${id}">Not for us</button>`;
+    else if (e.status === 'blocked') actions = `<button class="btn btn-dark" type="button" data-action="need-upload" data-id="n4">Upload photos</button>`;
+    else if (e.status === 'drafting' || e.status === 'scheduled') actions = `<button class="btn btn-line" type="button" data-action="event-changes" data-id="${id}">Ask for changes</button>`;
+    openDrawer(`
+      <span class="eyebrow">${fmtShort(e.date)}</span>
+      <h2 id="drawer-title" style="margin-top:6px">${esc(e.title)}</h2>
+      <div class="meta">${deskTag(e.desk)}${statusEl(e.status)}</div>
+      <div class="drawer-section"><h4>What it is</h4><p>${esc(e.detail)}</p></div>
+      ${extra}
+      ${e.status !== 'idea' ? `<div class="drawer-section"><h4>Checked before it reaches you</h4><ul class="checklist"><li>Proofread</li><li>Sounds like Oakmere</li><li>Ad rules (CAP Code, GDC guidance)</li><li>Consent and privacy</li></ul></div>` : ''}
+      <div class="drawer-actions">${actions}</div>`);
+  }
+  function carouselPreview() {
+    const c = D.carousel;
+    return `<div class="drawer-section"><h4>Slides</h4><div class="slides">${c.slides.map((s, i) => `<div class="slide"><small>${i + 1} / ${c.slides.length}</small>${esc(s)}<small>Oakmere Dental</small></div>`).join('')}</div></div>
+      <div class="drawer-section"><h4>Caption</h4><p>${esc(c.caption)}</p></div>`;
+  }
+
+  function setEventStatus(id, status) { const e = S.calendar.find(x => x.id === id); if (e) e.status = status; }
+  function removeNeed(id, cb) {
+    const el = document.querySelector(`[data-need="${id}"]`);
+    S.needs = S.needs.filter(x => x.id !== id);
+    if (el) { el.classList.add('leaving'); setTimeout(() => { cb && cb(); render(); }, 240); } else { cb && cb(); render(); }
+  }
+
+  /* ---------------- Chat with Head of Agents ---------------- */
+  const PLANS = {
+    implants: {
+      intro: 'Here’s how I’d get more implant patients through the door. Lead Gen, Social and Paid Ads have each looked at it.',
+      rows: [
+        { desk: 'ads', what: 'Search ads for “dental implants” in Maidenhead and 4 nearby towns', why: 'Local searchers book at £44. National searches never did.', title: 'Implant search ads: nearby towns', date: '2026-11-18' },
+        { desk: 'social', what: 'A carousel that explains implant costs line by line', why: 'Cost is the top question in implant enquiries this month.', title: 'Implant costs explained (carousel)', date: '2026-11-21' },
+        { desk: 'lead', what: 'A 3-email nurture for implant enquiries who haven’t booked', why: 'Implant patients take 3 to 6 weeks to decide. 38 are in that window now.', title: 'Implant nurture emails start', date: '2026-11-27' },
+        { desk: 'lead', what: 'Ask October implant patients for a referral', why: 'Referrals accept treatment at twice the rate of ad leads.', title: 'Implant referral ask', date: '2026-12-02' },
+      ],
+    },
+    newyear: {
+      intro: 'Here’s a new year smile campaign. January is the busiest month for Invisalign enquiries, so we build up through December.',
+      rows: [
+        { desk: 'social', what: 'Film 4 short Reels in one afternoon: myths, costs, timeline, a patient story', why: 'One shoot covers the whole of December and January.', title: 'New year content shoot', date: '2026-12-01' },
+        { desk: 'lead', what: 'A “start in January” waitlist with a free scan', why: 'People decide over Christmas and book in January. A waitlist captures them early.', title: 'January waitlist opens', date: '2026-12-08' },
+        { desk: 'ads', what: 'Search and Meta ads, building to £30 a day from 27 December', why: 'Cost per click is lowest between Christmas and New Year, and intent is high.', title: 'New year ads go live', date: '2026-12-27' },
+        { desk: 'social', what: '“Smile by summer” Reel and Stories', why: 'Invisalign takes about 6 months. January to July is the story.', title: 'Smile by summer (Reel)', date: '2026-12-29' },
+      ],
+    },
+  };
+  function genericPlan(topic) {
+    const t = topic.charAt(0).toUpperCase() + topic.slice(1);
+    return {
+      intro: `Here’s a first plan for ${topic}. I kept it small so we can see what works before spending more.`,
+      rows: [
+        { desk: 'social', what: `Two Reels answering the questions people ask about ${topic}`, why: 'Answering real questions earns saves, and saves turn into enquiries.', title: `${t}: questions answered (Reel)`, date: '2026-11-18' },
+        { desk: 'ads', what: `A 2-week Google Search test for ${topic} in Maidenhead, £10 a day`, why: 'Search tells us quickly whether local demand is there.', title: `${t} search test`, date: '2026-11-21' },
+        { desk: 'lead', what: `A ${topic} page with a short quiz and a free consultation offer`, why: 'The quiz converts 3× better than a plain contact form.', title: `${t} enquiry page live`, date: '2026-11-24' },
+      ],
+    };
+  }
+
+  function replyFor(q) {
+    const t = q.toLowerCase();
+    if (/implant/.test(t)) return { plan: 'implants' };
+    if (/new year|january|christmas|december|festive/.test(t)) return { plan: 'newyear' };
+    if (/budget|spend|spent|ads?\b|cost per/.test(t)) return { text: `This month we’ve spent <b>£472 of £2,400</b>, right on pace. Google Search is doing best at <b>£29 per consultation</b>. Meta is at £52, so I’ve suggested moving £150 across. It’s waiting for you under Needs you.` };
+    if (/how.*(going|doing)|result|report|numbers/.test(t)) return { text: `In the last 30 days: <b>186 enquiries</b>, <b>61 consultations</b> and <b>£48,600</b> of treatment accepted. That’s up 23% on the month before. The biggest leak is call-backs: enquiries called within an hour book at 52%, but after a day it’s 19%.` };
+    if (/whiten|veneer|invisalign|aligner|bond|hygien|check.?up|emergenc/.test(t)) {
+      const topic = (t.match(/whitening|veneers?|invisalign|aligners?|bonding|hygiene|check.?ups?|emergenc\w*/) || ['this'])[0];
+      return { generic: topic };
+    }
+    return { ask: true };
+  }
+
+  function chatHtml() {
+    const msgs = S.chat.map(m => {
+      if (m.kind === 'typing') return `<div class="msg msg-them"><span class="typing" aria-label="Typing"><i></i><i></i><i></i></span></div>`;
+      if (m.kind === 'plan') return planCard(m);
+      return `<div class="msg ${m.from === 'me' ? 'msg-me' : 'msg-them'}">${m.html}</div>`;
+    }).join('');
+    return `<div class="row"><span class="avatar avatar-lg">H</span><div><h2 id="drawer-title" style="font-size:20px">Head of Agents</h2><span class="small muted">Briefs Lead Gen, Social and Paid Ads for you</span></div></div>
+      <div class="chat" id="chat-log">${msgs || `<div class="msg msg-them">Hi ${esc(D.practice.owner)}. What would you like more of? Patients for a treatment, a campaign for a date, or a question about the numbers.</div>`}</div>
+      <form class="ask chat-input" data-form="chat"><label for="chat-input" style="position:absolute;left:-9999px">Message Head of Agents</label>
+        <input id="chat-input" name="q" type="text" autocomplete="off" placeholder="Reply to the Head of Agents"><button class="btn btn-dark" type="submit">Send</button></form>`;
+  }
+  function planCard(m) {
+    const p = m.plan;
+    const state = m.state || 'open';
+    return `<div class="msg msg-them">${esc(p.intro)}</div>
+      <div class="plan-card">
+        <div><b>The plan</b><div class="small muted">Each step has the reason behind it. Proofread and checked against UK ad rules.</div></div>
+        ${p.rows.map(r => `<div class="plan-row">${deskTag(r.desk)}<div>${esc(r.what)}<small>Why: ${esc(r.why)} · ${fmtShort(r.date)}</small></div></div>`).join('')}
+        <div class="row wrap">${state === 'open'
+          ? `<button class="btn btn-dark btn-sm" type="button" data-action="plan-approve" data-mid="${m.id}">Approve and add to calendar</button><button class="btn btn-line btn-sm" type="button" data-action="plan-change" data-mid="${m.id}">Ask for changes</button>`
+          : state === 'approved' ? `<span class="status"><i class="dot dot-always"></i>Approved. ${p.rows.length} items added to your calendar.</span>` : `<span class="status"><i class="dot dot-working"></i>Changes requested</span>`}</div>
+      </div>`;
+  }
+  function renderChat() {
+    if (S.drawerKind !== 'chat') return;
+    $('#drawer-body').innerHTML = chatHtml();
+    const log = $('#drawer'); log.scrollTop = log.scrollHeight;
+    const inp = $('#chat-input'); inp && inp.focus();
+  }
+  function openChat(prefill) {
+    S.drawerKind = 'chat';
+    openDrawer(chatHtml(), { focus: '#chat-input' });
+    if (prefill) setTimeout(() => { const i = $('#chat-input'); if (i) { i.value = prefill; i.focus(); } }, 40);
+    const dr = $('#drawer'); dr.scrollTop = dr.scrollHeight;
+  }
+  let mid = 0;
+  function sendChat(q) {
+    q = q.trim(); if (!q || S.chatBusy) return;
+    if (S.drawerKind !== 'chat') openChat();
+    S.chat.push({ from: 'me', html: esc(q) });
+    S.chat.push({ kind: 'typing' }); S.chatBusy = true; renderChat();
+    setTimeout(() => {
+      S.chat = S.chat.filter(m => m.kind !== 'typing'); S.chatBusy = false;
+      const r = S.pendingTopic ? { generic: q.toLowerCase().replace(/[^a-z ]/g, '').trim() || 'this' } : replyFor(q);
+      S.pendingTopic = false;
+      if (r.plan) S.chat.push({ kind: 'plan', id: ++mid, plan: PLANS[r.plan] });
+      else if (r.generic) S.chat.push({ kind: 'plan', id: ++mid, plan: genericPlan(r.generic) });
+      else if (r.text) S.chat.push({ from: 'them', html: r.text });
+      else {
+        S.pendingTopic = true;
+        S.chat.push({ from: 'them', html: `Happy to. Before I brief the team, two quick questions:<ol><li>Which treatment matters most right now? Implants, Invisalign, whitening or something else?</li><li>Is there a date to work towards?</li></ol>
+          <div class="suggest" style="margin-top:10px"><button type="button" data-action="ask" data-q="Implants">Implants</button><button type="button" data-action="ask" data-q="Invisalign for the new year">Invisalign for the new year</button><button type="button" data-action="ask" data-q="Whitening">Whitening</button></div>` });
+      }
+      renderChat();
+    }, 1100);
+  }
+
+  /* ================================================================
+     TEAM
+     ================================================================ */
+  function node(a, extra) {
+    return `<button class="node ${extra || ''}" type="button" data-action="agent" data-id="${a.id}"><span><b>${esc(a.name)}</b><small>${a.now && a.now !== 'Idle' && a.now !== 'Always on' ? esc(a.now) : AGENT_STATE[a.state]}</small></span><i class="dot dot-${a.state}" style="margin-left:auto" aria-label="${AGENT_STATE[a.state]}"></i></button>`;
+  }
+  function viewTeam() {
+    const T = D.team;
+    return `
+    <div class="page-head"><span class="eyebrow">Your team</span><h1>One team, three desks, one voice.</h1>
+      <p class="lede">You talk to the Head of Agents. Each desk owns a result. Writers, designers and analysts are shared, so everything sounds like Oakmere. Nothing reaches you without passing Quality & Legal.</p></div>
+
+    <section class="section">
+      <div class="org-top">
+        <div class="node node-you"><span class="avatar avatar-soft">M</span><span><b>${esc(D.practice.ownerFull)}</b><small>You approve and publish</small></span></div>
+        <span class="connector-h"></span>
+        ${node(T.head, 'node-head')}
+        <span class="connector-h dashed"></span>
+        ${node(T.human)}
+      </div>
+      <div class="trunk"></div>
+      <div class="desk-row">
+        ${T.desks.map(d => `
+          <div class="desk-col ${d.id}">
+            <h3><span>${esc(d.name)}</span><a href="#${d.id}">Open desk</a></h3>
+            <p class="owns">Owns: ${esc(d.owns)}</p>
+            ${node(d.manager)}
+            <div class="crew">${d.crew.map(c => node(c)).join('')}</div>
+          </div>`).join('')}
+      </div>
+      <div class="shared">
+        <div class="shared-col bench"><h3>Craft Bench</h3><p>Shared by every desk. One copywriter means one voice everywhere.</p>
+          <div class="nodes">${T.bench.map(a => node(a)).join('')}</div></div>
+        <div class="shared-col quality"><h3>Quality & Legal</h3><p>Every piece of work passes here before it reaches you. Checks, not legal advice.</p>
+          <div class="nodes">${T.quality.map(a => node(a)).join('')}</div></div>
+      </div>
+      <div class="later"><span>Desks you can add later:</span>${T.later.map(l => `<span class="slot">${esc(l)}</span>`).join('')}</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Why it’s set up like this</h2><p>The pod model most good agencies use.</p></div>
+      <div class="why-pod">
+        <div><b>One owner per result</b>Each desk manager owns a number you care about: consultations, reach, cost per patient. No finger-pointing.</div>
+        <div><b>Shared craft, one voice</b>The same copywriter and designer work for every desk, so your ads, posts and emails feel like one practice.</div>
+        <div><b>A gate before you</b>Proofreading, brand voice, ad rules and consent are checked on everything. You only see work that’s ready.</div>
+      </div>
+    </section>`;
+  }
+  function findAgent(id) {
+    const T = D.team;
+    const all = [T.head, T.human, ...T.bench, ...T.quality];
+    T.desks.forEach(d => all.push(Object.assign({ desk: d.id }, d.manager), ...d.crew.map(c => Object.assign({ desk: d.id }, c))));
+    const a = all.find(x => x.id === id);
+    if (a && !a.desk) a.desk = T.bench.includes(a) ? 'bench' : T.quality.includes(a) ? 'quality' : null;
+    return a;
+  }
+  function agentDrawer(id) {
+    const a = findAgent(id); if (!a) return;
+    const isHuman = id === 'sam';
+    const deskLine = a.desk ? `<span class="desk-tag"><i class="sw sw-${a.desk}"></i>${esc(deskName(a.desk))}</span>` : '';
+    openDrawer(`
+      <span class="eyebrow">${isHuman ? 'Human' : 'Agent'}</span>
+      <h2 id="drawer-title" style="margin-top:6px">${esc(a.name)}</h2>
+      <div class="meta">${deskLine}${agentState(a.state)}</div>
+      <div class="drawer-section"><h4>Job</h4><p>${esc(a.job)}</p></div>
+      <div class="drawer-section"><h4>Right now</h4><p>${esc(a.now)}</p></div>
+      ${a.desk === 'quality' ? '' : `<div class="drawer-section"><h4>Before anything reaches you</h4><ul class="checklist"><li>Proofread</li><li>Brand voice</li><li>Ad rules</li><li>Privacy & consent</li></ul></div>`}
+      <div class="drawer-actions">${isHuman
+        ? `<button class="btn btn-dark" type="button" data-action="toast" data-msg="In the real product this opens WhatsApp with Sam.">Message Sam</button><button class="btn btn-line" type="button" data-action="toast" data-msg="Booked: monthly results call, Thu 26 Nov at 12:30.">Book a call</button>`
+        : `<button class="btn btn-dark" type="button" data-action="chat-about" data-name="${esc(a.name)}">Ask the Head of Agents about this</button>`}</div>`);
+  }
+
+  /* ================================================================
+     LEAD GEN
+     ================================================================ */
+  function deskHero(k, title, lede, managerId) {
+    const T = D.team, d = T.desks.find(x => x.id === k);
+    return `<div class="desk-hero"><div class="page-head">
+      <span class="eyebrow">${deskTag(k)}</span><h1>${title}</h1><p class="lede">${lede}</p></div>
+      <button class="node" type="button" data-action="agent" data-id="${managerId}"><span><b>${esc(d.manager.name)}</b><small>${esc(d.manager.now)}</small></span><i class="dot dot-${d.manager.state}" style="margin-left:12px"></i></button></div>`;
+  }
+  const LEAD_TABS = [['overview', 'Overview'], ['enquiries', 'Enquiries'], ['journey', 'One patient’s journey'], ['connect', 'How it connects'], ['attribution', 'What gets the credit']];
+  function viewLead() {
+    return `${deskHero('lead', 'Every enquiry answered, scored and followed up.', 'From the first click to an accepted treatment plan. Measured in consultations and pounds, not form fills.', 'm-lead')}
+      <div class="tabs" role="tablist">${LEAD_TABS.map(([k, l]) => `<button class="tab" role="tab" type="button" aria-selected="${S.leadTab === k}" data-action="lead-tab" data-tab="${k}">${l}</button>`).join('')}</div>
+      <div class="tab-body" role="tabpanel">${({ overview: leadOverview, enquiries: leadBoard, journey: leadJourney, connect: leadConnect, attribution: leadAttr })[S.leadTab]()}</div>`;
+  }
+  function leadOverview() {
+    const f = D.funnel, max = f[0].v;
+    const rows = f.map((s, i) => {
+      const prev = i ? f[i - 1].v : null;
+      const conv = prev ? Math.round((s.v / prev) * 100) : null;
+      const w = i === 0 ? 100 : Math.max(2, (s.v / f[1].v) * 70);
+      const note = D.funnelNotes[s.stage];
+      const leak = s.stage === 'Consultation booked';
+      return `<div class="f-row"><span class="f-name">${esc(s.stage)}</span>
+        <div class="f-bar"><span style="width:${w}%;${i === 0 ? 'background:#BFDFDA;color:#0B5F57' : ''}">${w > 12 ? n(s.v) : ''}</span>${w <= 12 ? `<em>${n(s.v)}</em>` : ''}</div>
+        <span class="f-conv">${i === 0 ? 'Last 30 days' : i === 1 ? '<b>2.9%</b> of visitors' : `<b>${conv}%</b> of the stage before`}</span>
+        ${note ? `<p class="f-note ${leak ? 'leak' : ''}">${leak ? 'Biggest leak. ' : ''}${esc(note.replace('Biggest leak. ', ''))}</p>` : ''}</div>`;
+    }).join('');
+    return `
+      <div class="section-head"><h2>The funnel, last 30 days</h2><p>Visitors bar not to scale with the rest, so the small stages stay readable.</p></div>
+      <div class="funnel">${rows}</div>
+      <div class="grid cols-3 section">
+        <div class="card card-soft"><span class="stat-label">First reply to a new enquiry</span><div class="stat-value" style="margin-top:4px">2 min</div><p class="small muted" style="margin-top:6px">Automatic text and email. Was 3 hours 10 minutes before we started.</p></div>
+        <div class="card card-soft"><span class="stat-label">Call from Leah</span><div class="stat-value" style="margin-top:4px">38 min</div><p class="small muted" style="margin-top:6px">Median. Target is under 1 hour. 4 are late today.</p></div>
+        <div class="card card-soft"><span class="stat-label">Cost per accepted patient</span><div class="stat-value" style="margin-top:4px">£100</div><p class="small muted" style="margin-top:6px">£2,310 ad spend ÷ 23 patients. Average plan is worth £2,113.</p></div>
+      </div>
+      <div class="section">
+        <div class="section-head"><h2>How an enquiry is scored</h2><p>Out of 100. Over 60 counts as qualified and goes to Leah first.</p></div>
+        <div class="grid cols-4">
+          ${[['Treatment', 'Implants and Invisalign +20, whitening +8'], ['Distance', 'Under 5 miles +15, over 10 miles −10'], ['Timing', 'Ready within 3 months +20'], ['Engagement', 'Opened emails, visited the prices page, +5 to +15']].map(([t, d]) => `<div><b>${t}</b><p class="small muted" style="margin-top:4px">${d}</p></div>`).join('')}
+        </div>
+      </div>`;
+  }
+  function leadBoard() {
+    return `<div class="section-head"><h2>Enquiries in HubSpot</h2><p>Same stages as your CRM. Amber edge means the call-back is late.</p></div>
+      <div class="board">${D.leadBoard.map(c => `<div class="board-col"><h4>${esc(c.col)}<span class="muted">${c.items.length}</span></h4>
+        ${c.items.map(l => `<div class="lead-card ${l.late && !S.called[l.n] ? 'late' : ''}"><b>${esc(l.n)}</b><small>${esc(l.t)} · ${esc(l.src)}</small>
+          <div class="row"><span>Score <span class="score">${l.score}</span></span><span class="${l.late && !S.called[l.n] ? 'late-note' : 'muted'}">${l.late && !S.called[l.n] ? 'Waiting ' : ''}${esc(l.age)}</span></div></div>`).join('')}</div>`).join('')}</div>
+      <p class="small muted" style="margin-top:14px">Names are made up. In the real product this is a live view of HubSpot; nothing is copied by hand.</p>`;
+  }
+  function leadJourney() {
+    const J = D.journey, i = S.journeyStep, s = J.steps[i];
+    return `<div class="section-head"><h2>${esc(J.who)}: from a Reel to a ${esc(J.value)} ${esc(J.treatment)} plan</h2><p>Every agent, every tool and every CRM change along the way.</p></div>
+      <div class="journey">
+        <div class="j-list">${J.steps.map((st, k) => `<button class="j-step d-${st.desk} ${k === i ? 'on' : ''}" type="button" data-action="j-step" data-i="${k}"><small>${esc(st.date)}</small>${esc(st.title)}</button>`).join('')}</div>
+        <div class="j-detail card">
+          <div class="j-progress">${J.steps.map((_, k) => `<i class="${k <= i ? 'on' : ''}"></i>`).join('')}</div>
+          <div class="row" style="margin-top:18px;gap:16px">${deskTag(s.desk)}<span class="small muted">${esc(s.date)} · Step ${i + 1} of ${J.steps.length}</span></div>
+          <h3>${esc(s.title)}</h3>
+          <p class="what">${esc(s.what)}</p>
+          <div class="j-facts"><div><span>Who did it</span>${esc(s.agent)}</div><div><span>Tool</span>${esc(s.tool)}</div><div><span>In HubSpot</span>${esc(s.crm)}</div></div>
+          <div class="j-nav"><button class="btn btn-line btn-sm" type="button" data-action="j-step" data-i="${i - 1}" ${i === 0 ? 'disabled style="opacity:.4"' : ''}>Back</button>
+            <button class="btn btn-dark btn-sm" type="button" data-action="j-step" data-i="${i + 1}" ${i === J.steps.length - 1 ? 'disabled style="opacity:.4"' : ''}>Next step</button></div>
+        </div>
+      </div>`;
+  }
+  function leadConnect() {
+    const F = D.flow;
+    return `<div class="section-head"><h2>How the tools talk to each other</h2><p>Left to right, in about 2 seconds, with no copying and pasting.</p></div>
+      <div class="flow">${F.columns.map((c, i) => `<div class="flow-col ${i === 3 ? 'crm' : ''}"><h4>${esc(c.title)}</h4>${c.items.map(x => `<div class="fbox">${esc(x)}</div>`).join('')}</div>`).join('')}</div>
+      <div class="flow-loop">↺ The loop: when a patient books and accepts, that result goes back to Google and Meta, so the ads learn to find more people like them.</div>
+      <div class="section"><div class="section-head"><h2>The jargon, in plain English</h2></div>
+        <div class="terms">${F.terms.map(t => `<div><b>${esc(t.t)}</b><p>${esc(t.d)}</p></div>`).join('')}</div></div>
+      <div class="section card card-soft"><b>Rules we follow</b><p class="small" style="margin-top:6px;color:var(--ink-2)">Patients are individuals, so we only text or email people who agreed to it (PECR), log that consent in HubSpot, honour opt-outs straight away, and keep a suppression list. Patient data stays in UK/EU-hosted tools with a data processing agreement. These are checks, not legal advice.</p></div>`;
+  }
+  function leadAttr() {
+    const A = D.attribution, vals = A.models[S.attrModel];
+    const items = A.channels.map((c, i) => ({ name: c, v: vals[i], note: A.spend[i] ? `£${n(Math.round(A.spend[i] / vals[i]))} per patient` : 'No ad spend' }));
+    return `<div class="section-head"><h2>Which channels get the credit</h2><p>23 accepted plans in the last 30 days. Change the model and watch the cost per patient move.</p></div>
+      <div class="seg" role="group" aria-label="Attribution model">${Object.keys(A.models).map(k => `<button type="button" aria-pressed="${k === S.attrModel}" data-action="attr" data-m="${k}">${k}</button>`).join('')}</div>
+      <p class="small" style="margin-top:12px;color:var(--ink-2)">${esc(A.modelNotes[S.attrModel])}</p>
+      <div class="charts" style="margin-top:8px">
+        <div><div class="chart-title">Patients credited, ${esc(S.attrModel.toLowerCase())}</div>${hbars(items, { fmt: v => (Math.round(v * 10) / 10).toString(), color: 'var(--lead)' })}</div>
+        <div><div class="chart-title">What patients told us</div><div class="chart-sub">“How did you hear about us?” asked at the consultation.</div>${hbars(A.selfReported, { color: '#1B1B1A' })}
+          <p class="small muted" style="margin-top:14px">Software says Google closes most deals. Patients say Instagram is where they first heard of you. Both are true, which is why we never cut social on last-click numbers alone.</p></div>
+      </div>
+      <div class="section grid cols-3">
+        <div><b>Tracking tags (UTMs)</b><p class="small muted" style="margin-top:4px">Every link carries source, medium and campaign, e.g. <i>google / cpc / invisalign-search</i>, so HubSpot knows where each enquiry came from.</p></div>
+        <div><b>Cost to win a patient</b><p class="small muted" style="margin-top:4px">£100 across all channels this month. The average plan is £2,113, so ads pay back on the first appointment.</p></div>
+        <div><b>Our default model</b><p class="small muted" style="margin-top:4px">W-shaped. It credits the first touch, the enquiry and the booking, which matches how dental patients actually decide.</p></div>
+      </div>`;
+  }
+
+  /* ================================================================
+     SOCIAL
+     ================================================================ */
+  function viewSocial() {
+    const weekStart = parse('2026-11-02');
+    const weeks = [0, 1, 2].map(w => {
+      const days = [];
+      for (let i = 0; i < 7; i++) { const d = new Date(weekStart); d.setDate(d.getDate() + w * 7 + i); days.push(d); }
+      return days;
+    });
+    const weekHtml = days => `<div class="week">${days.map(d => {
+      const key = iso(d), posts = S.calendar.filter(e => e.desk === 'social' && e.date === key);
+      return `<div class="week-day ${key === D.today ? 'today' : ''}"><h4><b>${d.getDate()}</b>${DAYS[d.getDay()]}</h4>${posts.map(p => `
+        <button class="post ${p.status === 'done' ? 'is-done' : ''} ${p.status === 'idea' ? 'is-idea' : ''}" type="button" data-action="open-event" data-id="${p.id}">
+          <span class="post-thumb ${/Reel/.test(p.title) ? 'reel' : ''}">${/Reel/.test(p.title) ? '▶ Reel' : /carousel/i.test(p.title) ? 'Carousel' : 'Post'}</span>
+          <b>${esc(p.title.replace(/ \((Reel|carousel|Stories)\)/, ''))}</b>${statusEl(p.status)}</button>`).join('')}</div>`;
+    }).join('')}</div>`;
+    return `${deskHero('social', 'Posts that bring patients, not just likes.', 'Planned around what patients ask and what’s working in dental this week. You approve, then you press publish.', 'm-social')}
+      <section class="section"><div class="section-head"><h2>This week</h2><p>2 to 8 November</p></div>${weekHtml(weeks[0])}</section>
+      <section class="section"><div class="section-head"><h2>Next two weeks</h2><p>9 to 22 November</p></div>${weekHtml(weeks[1])}<div style="height:16px"></div>${weekHtml(weeks[2])}</section>
+      <section class="section"><div class="section-head"><h2>Ideas Lab</h2><p>Four watchers on Reels, TikTok and Shorts. What’s working in UK dental this week.</p></div>
+        <div class="ideas">${D.ideas.map(i => `<div class="idea"><span class="stat-big">${esc(i.stat)}</span><b>${esc(i.title)}</b><p>${esc(i.d)}</p></div>`).join('')}</div>
+        <p class="small muted" style="margin-top:12px">We watch public trends and summarise them. We don’t scrape or copy anyone’s content.</p></section>
+      <section class="section charts">
+        <div><div class="chart-title">People reached each week</div><div class="chart-sub">Thousands, Instagram and Facebook together.</div>
+          ${barChart({ data: D.socialWeekly.map(w => ({ label: w.wk, v: w.reach })), color: '#C8622F', fmt: v => v + 'k', unit: 'reached', tipPrefix: 'week of ', aria: 'Weekly reach rising from 6.1 thousand to 14.9 thousand', valueHead: 'Reach (thousands)' })}</div>
+        <div><div class="chart-title">Enquiries that started on social</div><div class="chart-sub">Link taps and DMs that became an enquiry in HubSpot.</div>
+          ${barChart({ data: D.socialWeekly.map(w => ({ label: w.wk, v: w.enq })), color: '#C8622F', unit: 'enquiries', tipPrefix: 'week of ', aria: 'Weekly enquiries from social rising from 3 to 9', valueHead: 'Enquiries' })}</div>
+      </section>`;
+  }
+
+  /* ================================================================
+     PAID ADS
+     ================================================================ */
+  function viewAds() {
+    const B = D.budget, pct = (B.spent / B.month) * 100, pace = (B.expected / B.month) * 100;
+    return `${deskHero('ads', 'Ad money goes where patients come from.', 'Google and Meta, watched every hour, moved only with your OK. Your card, your caps.', 'm-ads')}
+      <section class="section card">
+        <div class="pacing"><div>
+          <div class="row between wrap"><b>November budget</b><span class="small muted">Day 6 of 30</span></div>
+          <div class="pace-bar" role="img" aria-label="£${B.spent} spent of £${n(B.month)}; pace mark at £${B.expected}"><span style="width:${pct}%"></span><i style="left:${pace}%"></i></div>
+          <div class="goal-legend"><span><b style="color:var(--ink)">£${B.spent} spent</b> of £${n(B.month)}</span><span>Right on pace · line shows where we should be today</span></div>
+        </div>
+        <div class="guard"><div class="small"><b>Budget Guard</b><br><span class="muted">${S.adsPaused ? 'All ads paused' : 'Daily cap £80 · checks hourly'}</span></div>
+          <button class="btn ${S.adsPaused ? 'btn-dark' : 'btn-line'}" type="button" data-action="pause-all">${S.adsPaused ? 'Turn ads back on' : 'Pause all ads'}</button></div></div>
+      </section>
+      <section class="section"><div class="section-head"><h2>The team suggests</h2><p>Every change comes with the reason. Small fixes under £100 happen automatically, by your rule.</p></div>
+        <div class="recs">${S.recs.map(r => `<div class="rec"><div class="rec-body"><b>${esc(r.title)}</b><p>${esc(r.why)}</p></div>
+          ${r.state === 'approved' ? `<span class="status"><i class="dot dot-always"></i>Approved</span>` : r.done ? `<span class="status"><i class="dot dot-idle"></i>${esc(r.done)}</span>`
+          : r.id === 'r3' ? `<a class="btn btn-line btn-sm" href="#ads-variants" data-action="scroll" data-target="ads-variants">See the ads</a>`
+          : `<div class="row"><button class="btn btn-dark btn-sm" type="button" data-action="rec-approve" data-id="${r.id}">Approve</button><button class="btn btn-ghost btn-sm" type="button" data-action="rec-no" data-id="${r.id}">Not now</button></div>`}</div>`).join('')}</div></section>
+      <section class="section"><div class="section-head"><h2>Campaigns</h2><p>Last 30 days</p></div>
+        <div class="camps">
+          <div class="camp camp-h"><span>Campaign</span><span>Status</span><span class="num">Per day</span><span class="num">Consultations</span><span class="num">Cost each</span></div>
+          ${D.campaigns.map(c => `<div class="camp"><span><b>${esc(c.name)}</b></span><span>${S.adsPaused && c.state === 'live' ? statusEl('blocked').replace('Waiting on you', 'Paused') : statusEl(c.state)}</span><span class="num">£${c.daily}</span><span class="num">${c.consults || '–'}</span><span class="num">${c.cpc ? `<b>£${c.cpc}</b>` : '–'}</span></div>`).join('')}
+        </div></section>
+      <section class="section" id="ads-variants"><div class="section-head"><h2>Open Evening ads, waiting for you</h2><p>Three versions to test. All checked against the CAP Code and GDC guidance.</p></div>
+        <div class="grid cols-3">${D.adVariants.map((a, i) => `<div class="ad-prev"><span class="sp"><b>Sponsored</b> · oakmeredental.example</span><span class="h">${esc(a.h)}</span><span class="d">${esc(a.d)}</span><span class="ok">✓ No promised results · ✓ Price wording checked · ✓ Proofread</span></div>`).join('')}</div>
+        <div class="row" style="margin-top:16px">${S.recs.find(r => r.id === 'r3').state === 'approved' ? `<span class="status"><i class="dot dot-always"></i>Approved. Going live on Mon 16 Nov.</span>` : `<button class="btn btn-dark" type="button" data-action="rec-approve" data-id="r3">Approve all three</button><button class="btn btn-line" type="button" data-action="event-changes" data-id="c12">Ask for changes</button>`}</div>
+      </section>
+      <section class="section card card-soft"><b>Guardrails</b><p class="small" style="margin-top:6px;color:var(--ink-2)">Ads run on your own ad accounts and your card. The team can’t raise your budget, only suggest it. No ads for prescription-only treatments such as anti-wrinkle injections. No before-and-after images in ads. Finance wording follows the rules for credit adverts.</p></section>`;
+  }
+
+  /* ================================================================
+     ROUTER
+     ================================================================ */
+  const VIEWS = { home: viewHome, team: viewTeam, lead: viewLead, social: viewSocial, ads: viewAds };
+  function route() { const r = (location.hash || '#home').slice(1); return VIEWS[r] ? r : 'home'; }
+  function render() {
+    const r = route();
+    $('#view').innerHTML = VIEWS[r]();
+    document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === r));
+    if (S.drawerKind === 'chat') renderChat();
+  }
+  window.addEventListener('hashchange', () => { if (!$('#drawer').hidden) closeDrawer(); render(); window.scrollTo(0, 0); });
+
+  /* ---------------- Events ---------------- */
+  document.addEventListener('click', ev => {
+    const el = ev.target.closest('[data-action]');
+    if (ev.target.id === 'scrim') { closeDrawer(); return; }
+    if (!el) return;
+    const a = el.dataset.action, id = el.dataset.id;
+    switch (a) {
+      case 'close-drawer': closeDrawer(); break;
+      case 'toast': toast(el.dataset.msg); break;
+      case 'open-sam': agentDrawer('sam'); break;
+      case 'filter': S.filters[el.dataset.desk] = !S.filters[el.dataset.desk]; render(); break;
+      case 'month': {
+        const [y, m] = S.month.split('-').map(Number); const d = new Date(y, m - 1 + Number(el.dataset.dir), 1);
+        S.month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; render(); break;
+      }
+      case 'open-event': S.drawerKind = 'event'; eventDrawer(id); break;
+      case 'add-on-day': openChat(`For ${fmtShort(el.dataset.date)}: `); break;
+      case 'ask': sendChat(el.dataset.q); break;
+      case 'chat-about': closeDrawer(); openChat(`About the ${el.dataset.name}: `); break;
+      case 'need-approve': {
+        const nd = S.needs.find(x => x.id === id);
+        removeNeed(id, () => {
+          if (nd && nd.calId) setEventStatus(nd.calId, 'scheduled');
+          if (id === 'n2') { const r = S.recs.find(x => x.id === 'r1'); if (r) r.state = 'approved'; }
+        });
+        toast(id === 'n2' ? 'Approved. £150 moves to Google Search from Monday.' : 'Approved. Social will schedule it for this evening.');
+        break;
+      }
+      case 'need-review': { const nd = S.needs.find(x => x.id === id); if (nd && nd.calId) { S.drawerKind = 'event'; eventDrawer(nd.calId); } break; }
+      case 'need-calls': callsDrawer(); break;
+      case 'need-upload': uploadDrawer(); break;
+      case 'mark-called': {
+        S.called[el.dataset.name] = true; callsDrawer();
+        if (Object.keys(S.called).length >= 4) { closeDrawer(); removeNeed('n3'); toast('All 4 called. Nice. Lead Gen will log the outcomes in HubSpot.'); }
+        break;
+      }
+      case 'do-upload': closeDrawer(); removeNeed('n4', () => setEventStatus('c9', 'drafting')); toast('12 photos uploaded. The Designer is starting the “Meet the nurses” post.'); break;
+      case 'event-approve': {
+        setEventStatus(id, 'scheduled');
+        const nd = S.needs.find(x => x.calId === id);
+        closeDrawer();
+        if (nd) removeNeed(nd.id, () => { if (nd.id === 'n2') { const r = S.recs.find(x => x.id === 'r1'); if (r) r.state = 'approved'; } }); else render();
+        toast('Approved. It’s on the calendar.');
+        break;
+      }
+      case 'event-changes': changesDrawer(id); break;
+      case 'send-changes': {
+        const e = S.calendar.find(x => x.id === id);
+        if (e) e.status = 'drafting';
+        const nd = S.needs.find(x => x.calId === id);
+        closeDrawer();
+        if (nd) removeNeed(nd.id); else render();
+        toast(`Sent to the ${e ? deskName(e.desk) : ''} desk. They’ll come back within the hour.`);
+        break;
+      }
+      case 'event-go': setEventStatus(id, 'drafting'); closeDrawer(); render(); toast('Go ahead given. The team is drafting it.'); break;
+      case 'event-drop': S.calendar = S.calendar.filter(x => x.id !== id); closeDrawer(); render(); toast('Removed. The Ideas Lab will learn from that.'); break;
+      case 'plan-approve': {
+        const m = S.chat.find(x => x.id === Number(el.dataset.mid)); if (!m || m.state) break;
+        m.state = 'approved';
+        m.plan.rows.forEach((r, i) => S.calendar.push({ id: `p${m.id}-${i}`, date: r.date, desk: r.desk, title: r.title, status: 'drafting', detail: `${r.what}. Why: ${r.why}`, isNew: true }));
+        S.month = m.plan.rows[0].date.slice(0, 7);
+        renderChat(); toast(`${m.plan.rows.length} items added to your calendar.`);
+        setTimeout(() => { closeDrawer(); if (route() !== 'home') location.hash = '#home'; else render(); setTimeout(() => { const c = $('#calendar'); c && c.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60); }, 900);
+        break;
+      }
+      case 'plan-change': {
+        const m = S.chat.find(x => x.id === Number(el.dataset.mid)); if (!m) break;
+        m.state = 'changes'; S.chat.push({ from: 'them', html: 'Of course. What would you change? A different budget, different dates, or leave a desk out?' }); renderChat(); break;
+      }
+      case 'agent': agentDrawer(id); break;
+      case 'lead-tab': S.leadTab = el.dataset.tab; render(); break;
+      case 'goto-attr': ev.preventDefault(); S.leadTab = 'attribution'; location.hash = '#lead'; break;
+      case 'j-step': { const i = Number(el.dataset.i); if (i >= 0 && i < D.journey.steps.length) { S.journeyStep = i; render(); } break; }
+      case 'attr': S.attrModel = el.dataset.m; render(); break;
+      case 'rec-approve': {
+        const r = S.recs.find(x => x.id === id); if (r) r.state = 'approved';
+        if (id === 'r1') { S.needs = S.needs.filter(x => x.id !== 'n2'); setEventStatus('c20', 'scheduled'); }
+        if (id === 'r3') setEventStatus('c12', 'scheduled');
+        render(); toast(id === 'r3' ? 'Approved. Open Evening ads go live on Monday 16 November.' : 'Approved. £150 moves to Google Search from Monday.');
+        break;
+      }
+      case 'rec-no': { S.recs = S.recs.filter(x => x.id !== id); render(); toast('Noted. The Paid Ads Manager will look again next week.'); break; }
+      case 'pause-all': S.adsPaused = !S.adsPaused; render(); toast(S.adsPaused ? 'All ads paused. Nothing more will be spent until you turn them back on.' : 'Ads are back on.'); break;
+      case 'scroll': ev.preventDefault(); { const t = document.getElementById(el.dataset.target); t && t.scrollIntoView({ behavior: 'smooth' }); } break;
+      case 'toggle-table': {
+        const t = document.getElementById(el.dataset.target); if (!t) break;
+        t.hidden = !t.hidden; el.setAttribute('aria-expanded', String(!t.hidden)); el.textContent = t.hidden ? 'Show as table' : 'Hide table'; break;
+      }
+    }
+  });
+
+  document.addEventListener('submit', ev => {
+    const f = ev.target.closest('[data-form]'); if (!f) return;
+    ev.preventDefault();
+    const inp = f.querySelector('input'); const q = inp.value; inp.value = '';
+    if (f.dataset.form === 'ask' && !q.trim()) { openChat(); return; }
+    sendChat(q);
+  });
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !$('#drawer').hidden) closeDrawer(); });
+
+  /* chart tooltips */
+  document.addEventListener('mouseover', ev => {
+    const h = ev.target.closest('[data-tip]'); if (!h) return;
+    const chart = h.closest('.chart'), tip = chart && chart.querySelector('.tip'); if (!tip) return;
+    const cr = chart.getBoundingClientRect(), hr = h.getBoundingClientRect();
+    tip.innerHTML = h.getAttribute('data-tip');
+    tip.style.left = (hr.left - cr.left + hr.width / 2) + 'px'; tip.style.top = (hr.top - cr.top + 18) + 'px'; tip.style.opacity = 1;
+  });
+  document.addEventListener('mouseout', ev => {
+    const h = ev.target.closest('[data-tip]'); if (!h) return;
+    const tip = h.closest('.chart').querySelector('.tip'); if (tip) tip.style.opacity = 0;
+  });
+
+  /* ---------------- Small drawers ---------------- */
+  function callsDrawer() {
+    S.drawerKind = 'calls';
+    const people = [
+      { n: 'Tom W.', t: 'Implant', w: '2 h 40 m', note: 'Asked about paying monthly.' },
+      { n: 'Grace L.', t: 'Whitening', w: '3 h', note: 'Wants it done before a wedding on 12 Dec.' },
+      { n: 'Ravi D.', t: 'Invisalign', w: '2 h 15 m', note: 'Took the smile quiz twice.' },
+      { n: 'Sophie B.', t: 'Implant', w: '2 h 5 m', note: 'Existing patient’s partner.' },
+    ];
+    const html = `<span class="eyebrow">${deskTag('lead')}</span><h2 id="drawer-title" style="margin-top:6px">Call these 4 before 5pm</h2>
+      <p class="small muted" style="margin-top:8px">They all had the instant text. People called within the hour book twice as often. Numbers are hidden in this demo.</p>
+      <div class="needs" style="margin-top:18px">${people.map(p => `<div class="need"><div class="row between"><span class="need-title">${esc(p.n)} · ${esc(p.t)}</span><span class="small late-note">${esc(p.w)}</span></div>
+        <span class="need-why">${esc(p.note)}</span><div class="need-actions">${S.called[p.n] ? `<span class="status"><i class="dot dot-always"></i>Called</span>` : `<button class="btn btn-line btn-sm" type="button" data-action="mark-called" data-name="${esc(p.n)}">Mark as called</button>`}</div></div>`).join('')}</div>`;
+    if ($('#drawer').hidden) openDrawer(html); else $('#drawer-body').innerHTML = html;
+  }
+  function uploadDrawer() {
+    S.drawerKind = 'upload';
+    openDrawer(`<span class="eyebrow">${deskTag('social')}</span><h2 id="drawer-title" style="margin-top:6px">Upload the team shoot photos</h2>
+      <p class="small muted" style="margin-top:8px">Raw is fine. The Designer picks, crops and colour-matches. Anyone shown must have signed the photo consent form.</p>
+      <div style="margin-top:20px;border:1.5px dashed var(--line-3);border-radius:14px;padding:40px 20px;text-align:center;background:var(--soft)">
+        <b>Drop photos or videos here</b><p class="small muted" style="margin-top:4px">or</p>
+        <button class="btn btn-dark" type="button" data-action="do-upload" style="margin-top:8px">Choose files (demo)</button></div>`);
+  }
+  function changesDrawer(id) {
+    const e = S.calendar.find(x => x.id === id); if (!e) return;
+    S.drawerKind = 'changes';
+    openDrawer(`<span class="eyebrow">${deskTag(e.desk)}</span><h2 id="drawer-title" style="margin-top:6px">What would you change?</h2>
+      <p class="small muted" style="margin-top:8px">${esc(e.title)}</p>
+      <textarea id="changes-text" rows="5" style="width:100%;margin-top:16px;border:1px solid var(--line-3);border-radius:12px;padding:12px;font:inherit;resize:vertical" placeholder="e.g. Make slide 3 friendlier and mention we're open Saturdays"></textarea>
+      <div class="drawer-actions"><button class="btn btn-dark" type="button" data-action="send-changes" data-id="${id}">Send to the team</button></div>`, { focus: '#changes-text' });
+  }
+
+  render();
+})();

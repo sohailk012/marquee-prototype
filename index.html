@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backroom · Oakmere Dental</title>
+<meta name="description" content="Prototype: an AI marketing team for a small business, with lead gen, social and paid ads desks. Mock data only.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#home">
+        <span class="brand-name">Backroom</span>
+        <span class="brand-client">Oakmere Dental</span>
+      </a>
+      <nav class="mainnav" aria-label="Main">
+        <a href="#home" data-nav="home">Home</a>
+        <a href="#team" data-nav="team">Your team</a>
+        <a href="#lead" data-nav="lead"><i class="sw sw-lead"></i>Lead Gen</a>
+        <a href="#social" data-nav="social"><i class="sw sw-social"></i>Social</a>
+        <a href="#ads" data-nav="ads"><i class="sw sw-ads"></i>Paid Ads</a>
+      </nav>
+      <button class="am" type="button" data-action="open-sam" aria-label="Sam, your account manager">
+        <span class="avatar avatar-soft">S</span>
+        <span class="am-text"><b>Sam</b><small>Account manager</small></span>
+      </button>
+    </div>
+  </header>
+
+  <main id="view" tabindex="-1"></main>
+
+  <footer class="foot">
+    Prototype with made-up data. Oakmere Dental is a fictional practice. Compliance checks are checks, not legal advice.
+  </footer>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+    <button class="drawer-close" type="button" data-action="close-drawer" aria-label="Close">×</button>
+    <div id="drawer-body"></div>
+  </aside>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
