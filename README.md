@@ -17,3 +17,5 @@ A clickable demo of an AI marketing team for a small business, built around a fi
 Plain HTML, CSS and JavaScript with no build step: `index.html`, `styles.css`, `data.js` (all mock data) and `app.js` (views and interactions).
 
 **Live AI chat:** `functions/api/chat.js` runs on Cloudflare Pages and calls Claude. Agent skills live in `agents/registry.js`. Setup is in `BACKEND.md`. Without the backend, as on GitHub Pages, the chat uses scripted demo replies.
+
+**Agent training:** `agents/knowledge.js` holds 103 skills across 30 agents. They are adapted from MIT-licensed open-source marketing skill libraries (Corey Haines' marketingskills, agency-agents, wshobson/agents, VoltAgent) plus our own UK dental and compliance notes. Credits and licences are in `agents/CREDITS.md`. The Team page shows them, and the backend puts them into each agent's prompt.

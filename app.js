@@ -26,6 +26,9 @@
     awaitPass: false,
     notes: D.notifications.map(n => Object.assign({ read: false }, n)),
     alertShown: {},
+    customSkills: {},
+    skillQuery: '',
+    K: null,
   };
 
   /* ---------------- Helpers ---------------- */
@@ -670,6 +673,8 @@
       <div class="later"><span>Teams you can add later:</span>${T.later.map(l => `<span class="slot">${esc(l)}</span>`).join('')}</div>
     </section>
 
+    ${trainingSection()}
+
     <section class="section">
       <div class="section-head"><h2>Why it’s set up this way</h2><p>It’s how most good agencies work.</p></div>
       <div class="why-pod">
@@ -679,6 +684,47 @@
       </div>
     </section>`;
   }
+  /* ---------------- Training (from agents/knowledge.js) ---------------- */
+  const skillsOf = id => ((S.K && S.K.KNOWLEDGE && S.K.KNOWLEDGE[id]) || []).concat(S.customSkills[id] || []);
+  const srcOf = sid => (S.K && S.K.SOURCES && S.K.SOURCES[sid]) || null;
+  function allAgents() {
+    const T = D.team, out = [{ a: T.head, team: 'Your marketing lead' }];
+    T.desks.forEach(d => { out.push({ a: d.manager, team: d.name }); d.crew.forEach(c => out.push({ a: c, team: d.name })); });
+    T.bench.forEach(a => out.push({ a, team: D.desks.bench.name }));
+    T.quality.forEach(a => out.push({ a, team: D.desks.quality.name }));
+    return out;
+  }
+  function skillCard(sk, open) {
+    const srcs = (sk.sources || []).map(srcOf).filter(Boolean);
+    return `<details class="skill" ${open ? 'open' : ''}><summary><b>${esc(sk.title)}</b><span>${esc(sk.summary || '')}</span></summary>
+      ${sk.instructions ? `<div class="skill-how"><h5>How they do it</h5><p>${esc(sk.instructions)}</p></div>` : ''}
+      ${srcs.length ? `<div class="skill-src">Learned from: ${srcs.map(x => x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.name)}</a>` : esc(x.name)).join(' · ')}</div>` : sk.custom ? '<div class="skill-src">Added by you</div>' : ''}
+    </details>`;
+  }
+  function trainingSection() {
+    if (!S.K) return `<section class="section"><div class="section-head"><h2>How your team is trained</h2><p>Loading…</p></div></section>`;
+    const list = allAgents(), total = list.reduce((n, x) => n + skillsOf(x.a.id).length, 0);
+    const sources = Object.entries(S.K.SOURCES || {});
+    const q = (S.skillQuery || '').toLowerCase();
+    const groups = {};
+    list.forEach(({ a, team }) => skillsOf(a.id).forEach(sk => {
+      if (q && !(sk.title + ' ' + (sk.summary || '') + ' ' + a.name).toLowerCase().includes(q)) return;
+      (groups[team] = groups[team] || []).push({ a, sk });
+    }));
+    return `<section class="section" id="training">
+      <div class="section-head"><h2>How your team is trained</h2><p>Each team member follows written methods taken from experienced marketers, adjusted for a UK dental practice.</p></div>
+      <div class="story-tiles">
+        <div class="s-tile"><span class="stat-label">Team members</span><div class="stat-value">${list.length}</div><span class="stat-foot">plus Sam, a real person</span></div>
+        <div class="s-tile"><span class="stat-label">Skills they know</span><div class="stat-value">${total}</div><span class="stat-foot">tap anyone to see theirs</span></div>
+        <div class="s-tile"><span class="stat-label">Where the know-how comes from</span><div class="stat-value">${sources.length}</div><span class="stat-foot">free, open guides by marketers</span></div>
+      </div>
+      <div class="sources">${sources.map(([k, x]) => `<a class="source" ${x.url ? `href="${esc(x.url)}" target="_blank" rel="noopener"` : ''}><b>${esc(x.name)}</b><span>${esc(x.author || '')}${x.license ? ' · ' + esc(x.license) : ''}</span></a>`).join('')}</div>
+      <div class="lib-head"><h3>All skills</h3><label class="lib-search"><span style="position:absolute;left:-9999px">Search skills</span><input type="search" id="skill-q" placeholder="Search, e.g. headlines, reviews, budget" value="${esc(S.skillQuery || '')}"></label></div>
+      ${Object.keys(groups).length ? Object.entries(groups).map(([team, items]) => `<div class="lib-group"><h4>${esc(team)}</h4><div class="lib-grid">${items.map(({ a, sk }) =>
+        `<button class="lib-item" type="button" data-action="agent" data-id="${a.id}"><span class="tiny muted">${esc(a.name)}</span><b>${esc(sk.title)}</b><span>${esc(sk.summary || '')}</span></button>`).join('')}</div></div>`).join('') : '<p class="empty">No skills match that.</p>'}
+    </section>`;
+  }
+
   function findAgent(id) {
     const T = D.team;
     const all = [T.head, T.human, ...T.bench, ...T.quality];
@@ -686,6 +732,14 @@
     const a = all.find(x => x.id === id);
     if (a && !a.desk) a.desk = T.bench.includes(a) ? 'bench' : T.quality.includes(a) ? 'quality' : null;
     return a;
+  }
+  function teachDrawer(id) {
+    const a = findAgent(id); if (!a) return;
+    openDrawer(`<span class="eyebrow">Teach ${esc(a.name)}</span><h2 id="drawer-title" style="margin-top:6px">What should they know?</h2>
+      <p class="small muted" style="margin-top:8px">Write it like you’d brief a new member of staff. They’ll follow it from now on.</p>
+      <label class="field"><span>Name it</span><input id="teach-title" type="text" placeholder="e.g. How we talk about prices"></label>
+      <label class="field"><span>What they should do</span><textarea id="teach-body" rows="6" placeholder="e.g. Always say implants start from £2,400 and that we offer free consultations. Never compare our prices with other practices."></textarea></label>
+      <div class="drawer-actions"><button class="btn btn-dark" type="button" data-action="teach-save" data-id="${id}">Save</button><button class="btn btn-line" type="button" data-action="agent" data-id="${id}">Back</button></div>`, { focus: '#teach-title' });
   }
   function agentDrawer(id) {
     const a = findAgent(id); if (!a) return;
@@ -697,6 +751,9 @@
       <div class="meta">${deskLine}${agentState(a.state)}</div>
       <div class="drawer-section"><h4>What they do</h4><p>${esc(a.job)}</p></div>
       <div class="drawer-section"><h4>Right now</h4><p>${esc(a.now)}</p></div>
+      ${isHuman ? '' : `<div class="drawer-section"><h4>What they know (${skillsOf(id).length})</h4>
+        <div class="skills">${skillsOf(id).map((sk, i) => skillCard(sk, i === 0)).join('') || '<p class="small muted">Loading their training…</p>'}</div>
+        <button class="btn btn-line btn-sm" type="button" data-action="teach" data-id="${id}" style="margin-top:10px">Teach them something</button></div>`}
       ${a.desk === 'quality' ? '' : `<div class="drawer-section"><h4>Checked before you see it</h4><ul class="checklist"><li>Spelling</li><li>Sounds like you</li><li>Advertising rules</li><li>Privacy and permission</li></ul></div>`}
       <div class="drawer-actions">${isHuman
         ? `<button class="btn btn-dark" type="button" data-action="toast" data-msg="This would open WhatsApp with Sam.">Message Sam</button><button class="btn btn-line" type="button" data-action="toast" data-msg="Booked: monthly results call, Thu 26 Nov at 12:30.">Book a call</button>`
@@ -959,6 +1016,13 @@
       case 'ask': sendChat(el.dataset.q); break;
       case 'chat-about': closeDrawer(); openChat(`About the ${el.dataset.name}: `); break;
       case 'go': location.hash = el.dataset.href; break;
+      case 'teach': teachDrawer(id); break;
+      case 'teach-save': {
+        const t = ($('#teach-title') || {}).value || '', d = ($('#teach-body') || {}).value || '';
+        if (!t.trim() || !d.trim()) { toast('Add a short name and what they should do.'); break; }
+        (S.customSkills[id] = S.customSkills[id] || []).push({ title: t.trim(), summary: d.trim().split('.')[0] + '.', instructions: d.trim(), custom: true });
+        agentDrawer(id); toast('Saved. They’ll follow this from now on.'); break;
+      }
       case 'open-notes': notesDrawer(); break;
       case 'note-act': noteAction(id, el.dataset.a); break;
       case 'note-go': { const x = S.notes.find(n => n.id === id); if (x) { x.read = true; closeDrawer(); location.hash = x.go; updateBell(); } break; }
@@ -1126,6 +1190,13 @@
     e.date = d.dataset.day; render();
     toast(`Moved to ${fmtShort(e.date)}. The ${deskName(e.desk)} desk will reschedule it.`);
   });
+
+  document.addEventListener('input', ev => {
+    if (ev.target.id !== 'skill-q') return;
+    S.skillQuery = ev.target.value; render();
+    const i = $('#skill-q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  });
+  import('./agents/knowledge.js').then(m => { S.K = m; if (route() === 'team') render(); }).catch(() => { S.K = { KNOWLEDGE: {}, SOURCES: {} }; });
 
   render();
   checkApi();

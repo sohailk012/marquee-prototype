@@ -27,12 +27,23 @@
    today, so a brand new desk also needs a small code change in
    functions/api/chat.js. Ask whoever maintains the code.
 
+   SPECIALIST KNOW-HOW
+   Each agent below also has a `knowledge` list. It pulls working methods
+   from knowledge.js (keyed by the on-screen team ids in data.js) into the
+   agent's prompt:
+     own:         the agent's own methods, in full
+     specialists: its team's methods, in full (within a size budget)
+     brief:       other helpers, as one-line summaries only
+   Edit the methods themselves in knowledge.js. Credits: CREDITS.md.
+
    SAFETY
    - This file is published with the website, so anyone can read it.
      Never put passwords, API keys or real patient details in here.
    - Everything here is a prototype with a fictional client. The Quality
      & Legal skills are checks, not legal advice.
    ===================================================================== */
+
+import { KNOWLEDGE } from './knowledge.js';
 
 export const PRODUCT_NAME = 'Marquee';
 
@@ -46,6 +57,7 @@ export const AGENTS = [
     desk: 'head',
     role: 'The owner\'s one point of contact. Works out what the owner actually needs, asks the right questions, briefs the desks and brings back plans with the reasons.',
     canDelegateTo: ['m-lead', 'm-social', 'm-ads'],
+    knowledge: { own: ['head'], brief: ['analyst', 'research'] },
     skills: [
       {
         name: 'Triage',
@@ -74,6 +86,11 @@ Prefer acting with sensible assumptions over asking. Only clarify when a wrong g
     name: 'Lead Gen Manager',
     desk: 'lead',
     role: 'Owns enquiries, consultations booked and treatment accepted. Decides where effort goes each week across capture, follow-up, nurture and referrals.',
+    knowledge: {
+      own: ['m-lead'],
+      specialists: ['stl', 'score', 'nur', 'opp', 'cap', 'attr', 'ops', 'aud', 'crm'],
+      brief: ['analyst', 'research'],
+    },
     skills: [
       {
         name: 'Speed-to-lead',
@@ -106,6 +123,11 @@ Prefer acting with sensible assumptions over asking. Only clarify when a wrong g
     name: 'Social Manager',
     desk: 'social',
     role: 'Plans the monthly content calendar around the practice\'s goals (enquiries for high-value treatments), not vanity numbers.',
+    knowledge: {
+      own: ['m-social'],
+      specialists: ['plan', 'trend', 'comm', 'sched', 'video', 'design'],
+      brief: ['research', 'analyst'],
+    },
     skills: [
       {
         name: 'Content planning',
@@ -134,6 +156,11 @@ Prefer acting with sensible assumptions over asking. Only clarify when a wrong g
     name: 'Paid Ads Manager',
     desk: 'ads',
     role: 'Decides where the ad money goes and moves it when the numbers say so, always with the owner\'s OK.',
+    knowledge: {
+      own: ['m-ads'],
+      specialists: ['google', 'meta', 'guard', 'track'],
+      brief: ['design', 'video', 'research', 'analyst'],
+    },
     skills: [
       {
         name: 'Google Search',
@@ -162,6 +189,7 @@ Prefer acting with sensible assumptions over asking. Only clarify when a wrong g
     name: 'Copywriter',
     desk: 'bench',
     role: 'Writes every word in the practice\'s voice, for every desk.',
+    knowledge: { own: ['copy', 'voice'] },
     skills: [
       {
         name: 'Oakmere voice',
@@ -183,6 +211,7 @@ Prefer acting with sensible assumptions over asking. Only clarify when a wrong g
     name: 'Quality & Legal',
     desk: 'quality',
     role: 'Checks every plan and piece of wording before it reaches the owner: proofreading, brand voice and UK advertising, dental and privacy rules. These are checks, not legal advice.',
+    knowledge: { own: ['proof', 'voice', 'adrules', 'privacy'] },
     skills: [
       {
         name: 'Proofreading and facts',
@@ -226,11 +255,56 @@ export function agentsOnDesk(desk) {
   return AGENTS.filter((a) => a.desk === desk);
 }
 
+/* On-screen names for the knowledge.js team ids (mirrors data.js). */
+const TEAM_NAMES = {
+  head: 'Marketing lead', 'm-lead': 'New patients lead', opp: 'New ideas', aud: 'Patient research',
+  cap: 'Enquiries inbox', stl: 'Quick reply', score: 'Sorting', nur: 'Follow-ups', crm: 'Records',
+  attr: 'Results', ops: 'Day-to-day', 'm-social': 'Social media lead', plan: 'Post planner',
+  trend: 'Trend watch', comm: 'Comments & messages', sched: 'Posting', 'm-ads': 'Ads lead',
+  google: 'Google ads', meta: 'Facebook & Instagram ads', guard: 'Spend watch', track: 'Teaching the ads',
+  copy: 'Copywriter', design: 'Designer', video: 'Video Editor', research: 'Researcher', analyst: 'Numbers',
+  proof: 'Proofreader', voice: 'Sounds like you', adrules: 'Advertising rules', privacy: 'Privacy & permission',
+};
+
+/* Size budget for the know-how in one prompt (about 7k tokens). Methods
+   beyond it are listed as one-line summaries so the prompt stays bounded. */
+export const KNOWLEDGE_CHAR_BUDGET = 28000;
+
+/** Render an agent's knowledge.js methods as prompt text (empty if none). */
+export function renderKnowledge(agent, budget = KNOWLEDGE_CHAR_BUDGET) {
+  const k = agent && agent.knowledge;
+  if (!k) return '';
+  const full = [...(k.own || []), ...(k.specialists || [])];
+  const parts = [];
+  const summaries = [];
+  let used = 0;
+  for (const id of full) {
+    for (const s of KNOWLEDGE[id] || []) {
+      const block = `### ${TEAM_NAMES[id] || id}: ${s.title}\n${s.instructions.trim()}`;
+      if (used + block.length <= budget) {
+        parts.push(block);
+        used += block.length;
+      } else {
+        summaries.push(`- ${TEAM_NAMES[id] || id}: ${s.title}. ${s.summary}`);
+      }
+    }
+  }
+  for (const id of k.brief || []) {
+    for (const s of KNOWLEDGE[id] || []) summaries.push(`- ${TEAM_NAMES[id] || id}: ${s.title}. ${s.summary}`);
+  }
+  if (!parts.length && !summaries.length) return '';
+  let out = `## Specialist know-how\nWorking methods from the team, adapted for a UK private dental practice. Apply them where relevant; the client context and the rules above still win.`;
+  if (parts.length) out += `\n\n${parts.join('\n\n')}`;
+  if (summaries.length) out += `\n\n### Other help available\n${summaries.join('\n')}`;
+  return out;
+}
+
 /** Turn an agent and its skills into a plain-text brief for the model. */
 export function renderAgent(agent) {
   if (!agent) return '';
   const skills = (agent.skills || [])
     .map((s) => `### ${s.name}\n${String(s.instructions || '').trim()}`)
     .join('\n\n');
-  return `## ${agent.name}\n${agent.role}\n\n${skills}`;
+  const know = renderKnowledge(agent);
+  return `## ${agent.name}\n${agent.role}\n\n${skills}${know ? `\n\n${know}` : ''}`;
 }
